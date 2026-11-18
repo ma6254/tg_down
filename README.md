@@ -4,7 +4,7 @@ Telegram 下载工具的 Go 后端。
 
 把 Telegram 里能看到的媒体按任务队列下载到本地磁盘：单用户、本地优先，默认只监听 `127.0.0.1`；需要对外暴露时再启用 Bearer token。前端是一个 React 单页应用，构建后通过 `go:embed` 打进同一个可执行文件。
 
-> **状态：脚手架阶段（M0）**。目前只有 cobra 命令入口，HTTP 服务、数据库与下载逻辑尚未实现。完整规划见 [规划文档](../tg_down_doc/plan.md)。
+> **状态：脚手架阶段（M0）**。目前只有 cobra 命令入口，HTTP 服务、数据库与下载逻辑尚未实现。完整规划见 [规划文档](./doc/plan.md)。
 
 ## 规划中的能力
 
@@ -50,7 +50,7 @@ go build -o tg_down.exe .         # 构建
 服务启动（M1 起）：
 
 ```bash
-./tg_down.exe                     # 默认 http://127.0.0.1:8080
+./tg_down.exe                     # 默认 http://127.0.0.1:22429
 ```
 
 ## 配置（规划中）
@@ -59,7 +59,7 @@ go build -o tg_down.exe .         # 构建
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|
-| `server.http_addr` | `127.0.0.1:8080` | 监听地址，默认仅本机 |
+| `server.http_addr` | `127.0.0.1:22429` | 监听地址，默认仅本机 |
 | `download.dir` | `./downloads` | 下载根目录 |
 | `download.max_concurrency` | `3` | 并发下载数 |
 | `auth.token` | 空 | 对外暴露时必填 |
@@ -67,9 +67,9 @@ go build -o tg_down.exe .         # 构建
 
 ## 相关文档
 
-- [整体规划](../tg_down_doc/plan.md)
-- [API 草案](../tg_down_doc/api.md)
-- [参考实现分析](../tg_down_doc/reference.md)
+- [整体规划](./doc/plan.md)
+- [API 草案](./doc/api.md)
+- [参考实现分析](./doc/reference.md)
 
 ## 许可证
 

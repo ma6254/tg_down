@@ -11,7 +11,7 @@ Telegram 下载工具：Golang 后端 + React/TypeScript 前端。单用户，�
 - 浏览：按账号列会话（频道 / 群 / 私聊），按会话列消息，筛出含媒体的消息。
 - 下载：单文件下载、进度实时显示、暂停 / 继续 / 重试 / 删除、断点续传、落盘重命名与去重。
 - 任务：并发队列、低并发限流、`FLOOD_WAIT` 自动挂起并定时恢复。
-- 部署：单二进制（`go:embed` 前端），默认 `127.0.0.1:8080`；远程访问时开启 Bearer token。
+- 部署：单二进制（`go:embed` 前端），默认 `127.0.0.1:22429`；远程访问时开启 Bearer token。
 
 ### MVP 不做（后续再说）
 - 多用户 / 注册 / 权限分级。
@@ -99,7 +99,7 @@ type Client interface {
 
 要点：
 - **单进程单二进制**：`//go:embed` 打包 `tg_down_web/dist`，部署只拷贝一个 exe。
-- **开发期分离**：Vite dev server `proxy /api → 127.0.0.1:8080`，HMR 正常。
+- **开发期分离**：Vite dev server `proxy /api → 127.0.0.1:22429`，HMR 正常。
 - **状态真相在 SQLite**：内存只放 worker 与进度，重启后从库恢复任务。
 
 ## 4. 目录结构
@@ -126,11 +126,10 @@ tg_down_web/
     hooks/                  # useSse、useTasks
     store/                  # 轻量全局状态（账号切换、筛选）
   vite.config.ts            # proxy /api
-  tailwind.config.js
   tsconfig.json
 
-tg_down_doc/
-  README.md  plan.md  api.md
+tg_down_server/doc/
+  README.md  plan.md  api.md  reference.md
 ```
 
 ## 5. 数据模型（SQLite）
@@ -216,8 +215,8 @@ CREATE TABLE settings (
 
 | 配置 | 行为 |
 |---|---|
-| `--listen 127.0.0.1:8080`（默认） | 不要求 token，本地直接可用 |
-| `--listen 0.0.0.0:8080` | 启动时若未配置 token，**拒绝启动**并提示 |
+| `--listen 127.0.0.1:22429`（默认） | 不要求 token，本地直接可用 |
+| `--listen 0.0.0.0:22429` | 启动时若未配置 token，**拒绝启动**并提示 |
 | `--auth-token <t>` 或 `TG_DOWN_TOKEN` | 所有 `/api/*` 要求 `Authorization: Bearer <t>` |
 | 首次对外启动 | 可自动生成随机 token 并打印到控制台 |
 

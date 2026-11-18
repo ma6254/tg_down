@@ -19,8 +19,8 @@ Telegram 下载工具（Go + React + TypeScript），单用户本地优先，可
 ```
 tg_down/
   tg_down_server/   # Go 后端
+    doc/            # 本文档目录
   tg_down_web/      # React 前端
-  tg_down_doc/      # 本文档目录
 ```
 
 ## 下一步

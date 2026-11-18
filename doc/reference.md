@@ -53,7 +53,7 @@
 | [src/pages/Queue/index.tsx](../omni_toolbox/omni_toolbox_web/src/pages/Queue/index.tsx) | `src/pages/Downloads/index.tsx` | 统计卡 + 列表 + 详情侧栏布局可留；**2s 轮询换成 SSE** |
 | [src/pages/History/index.tsx](../omni_toolbox/omni_toolbox_web/src/pages/History/index.tsx) | 下载历史 | 分页 + 状态筛选的写法可参考 |
 | [src/utils/index.ts](../omni_toolbox/omni_toolbox_web/src/utils/index.ts) | `src/utils/index.ts` | `fmtDateTime` / `fmtDuration` 复用，新增 `fmtBytes` / `fmtSpeed` / `fmtEta` |
-| `vite.config.ts` | 同 | 复用 `@` alias 与 `/api` proxy，端口改 8080 |
+| `vite.config.ts` | 同 | 复用 `@` alias 与 `/api` proxy，端口改 22429 |
 
 ## 3. 必须重写或新增
 
@@ -158,7 +158,7 @@ func (m *Manager) Cancel(id int64) error   // 取消运行中：cancel context +
 ## 6. 已知坑（逐条都要处理）
 
 1. **CGO**：`gorm.io/driver/sqlite` 依赖 `mattn/go-sqlite3`。omni 靠本机 gcc 编译成功，但这会拖死交叉编译。tg_down 必须验证 `CGO_ENABLED=0 go build ./...` 通过。
-2. **端口冲突**：omni 用 28088/38081，同时跑会冲突；tg_down 固定 8080（Vite 5173 或 38081 需错开）。
+2. **端口冲突**：omni 用 28088/38081，同时跑会冲突；tg_down 固定 22429（Vite 5173 或 38081 需错开）。
 3. **`statusRecorder` 缺 `Flush` 就会让 SSE 失效**——看似正常但事件被 buffer 住，只在连接断开时一次性吐出。
 4. **SPA fallback 的「带点 404」规则**：下载接口路径不要带扩展名特征；`/api/...` 必须在挂载静态前注册，否则会被 SPA 吃掉。
 5. **`Close()` 里 `close(m.ch)`**：若仍有 goroutine 在 `Submit` 会 panic。下载管理器建议用 `context` 关闭信号，而不是关 channel。
