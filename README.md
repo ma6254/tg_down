@@ -40,22 +40,305 @@ webembed/          go:embed 前端产物
 
 ## 快速开始
 
-当前只有命令行骨架：
-
 ```bash
-go run .                          # 打印 cobra 帮助
+go run . --help                   # 查看全部命令与参数
+go run . version                  # 版本与构建信息
+go run .                          # 等价于 serve：校验参数并打印生效配置
 go build -o tg_down.exe .         # 构建
 ```
 
-服务启动（M1 起）：
+HTTP 服务本体尚未接入（M1）：`serve` 目前只做参数校验并打印启动信息，
+随后以非零码退出，避免"启动成功但什么都没发生"。
+
+## 命令行参数
+
+根命令与 `serve` 共用同一组参数（均为持久化 flag）：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `-c, --config` | 空 | 配置文件路径，空则尝试 `./config.json` |
+| `--workdir` | 空 | 启动前切换工作目录，相对路径都基于它解析 |
+| `--listen` | `127.0.0.1:22429` | HTTP 监听地址 |
+| `--download-dir` | `./downloads` | 下载根目录 |
+| `--max-concurrency` | `3` | 并发下载数，范围 1–8 |
+| `--auth-token` | 空 | API 鉴权 token；监听非回环地址时**必填** |
+| `--botapi-base-url` | 空 | 自建 Bot API 服务地址，空则用官方 |
+| `--log-level` | `info` | `debug` / `info` / `warn` / `error` |
+
+安全约束：监听 `0.0.0.0`、`::`、空主机或非回环 IP 时必须提供 `--auth-token`，
+否则启动失败；`--max-concurrency` 限制在 1–8，避免触发 Telegram 限流。
+
+## 账号管理
+
+默认零配置：内置 `desktop` 应用凭据（Telegram Desktop 公开的 api_id `2040`），开箱即可登录。
+需要独立配额时用 `--app custom` 配合自己申请的 `api_id` / `api_hash`（到
+<https://my.telegram.org> 的 "API development tools" 创建，也可用
+`TG_DOWN_API_ID` / `TG_DOWN_API_HASH` 环境变量提供）。
 
 ```bash
-./tg_down.exe                     # 默认 http://127.0.0.1:22429
+# 零配置登录（内置 desktop 应用）
+tg_down account login --phone +8613800000000
+
+# 需要代理时先写入配置（Clash 等），后续命令自动使用
+tg_down config set http_proxy http://127.0.0.1:7897
+tg_down account login --phone +8613800000000
+
+# 使用自备应用凭据（推荐长期使用，配额独立）
+tg_down account login --app custom --api-id 123456 --api-hash abcdef0123... \
+  --phone +8613800000000
+
+# 非交互：直接提供验证码与两步密码
+tg_down account login --phone +8613800000000 --code 12345 --password s3cret
+
+# 探测本机 Telegram Desktop（tdata）中已登录的账号：不登录、不发码
+tg_down account login --probe
+
+# 探测本工具自己保存的 session（可选 --phone/--session 指定）
+tg_down account login --probe-session
 ```
+
+| 参数 | 说明 |
+|---|---|
+| `--kind` | `mtproto`（默认）或 `botapi` |
+| `--app` | 内置应用：`desktop`（默认，零配置）或 `custom`（需自备 api 凭据） |
+| `--api-id` | 自备 api_id，也可用 `TG_DOWN_API_ID`；提供即视为 `custom` |
+| `--api-hash` | 自备 api_hash，也可用 `TG_DOWN_API_HASH` |
+| `--name` | 展示名，留空按类型自动生成（手机号打码 / `bot:<id>`） |
+| `--phone` | MTProto 手机号，E.164 格式 |
+| `--token` | Bot API token，形如 `123456789:AA...` |
+| `--code` | 登录验证码，留空则登录时交互输入 |
+| `--password` | 两步验证密码，留空则在需要时交互输入 |
+| `--session-dir` | session 存放目录，默认 `./sessions` |
+| `--session` | 直接指定 session 文件，优先于按手机号推导 |
+| `--probe` | 探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录 |
+| `--probe-timeout` | 探测时连接 Telegram 的超时，默认 `30s` |
+| `--probe-session` | 探测本工具自己保存的 session，不登录、不发码 |
+| `--tdata` | Telegram Desktop 的 tdata 目录，留空自动查找 |
+| `--tdata-passcode` | Telegram Desktop 的本地密码（设置了才需要） |
+
+登录成功后 session 写入 `sessions/mtproto-<手机号数字>.json`，权限收紧到 `0600`。
+该文件等同于账号凭证，**不要提交或分享**（`.gitignore` 已忽略 `sessions/`）。重复登录会复用
+有效 session，直接打印当前账号。
+
+账号登记到数据库后，如果库里**只有一个账号**，会自动设为当前账号（`settings.current_account_id`），
+无需再执行 `account switch`；有多个账号时保持原有选择。
+
+代理支持 `socks5` / `socks5h`（远端 DNS）与 `http` / `https`（CONNECT 隧道），后续下载同样走它。
+也可以用 `tg_down config set http_proxy ...` 持久化代理，未配置时直连。
+
+校验规则：`mtproto` 必须有合法手机号且不接受 `--token`；`--api-id` 与 `--api-hash` 必须成对提供；
+`--app custom` 必须带 api 凭据；`botapi` 必须有形态合法的 token 且不接受 `--phone`/`--code`/`--password`。
+打印时手机号、token 与代理凭据均脱敏。
+
+> **关于内置 desktop 应用**：它使用 Telegram Desktop 的公开凭据，零配置但**共享配额**，
+> 大量用户同时使用更容易触发 `FLOOD_WAIT`。长期使用建议自己申请应用后加 `--app custom`。
+
+### 探测本机 Telegram Desktop
+
+`--probe` 会读取 Windows 上已安装的 Telegram Desktop 的 `tdata`，用它原有的授权连一次
+Telegram，输出该账号信息与已登录设备列表，并把探测成功的账号**导入数据库**——不登录、不发码、不修改 `tdata`。
+
+```bash
+tg_down account login --probe
+tg_down account login --probe --tdata "C:\Users\me\AppData\Roaming\Telegram Desktop\tdata"
+tg_down account login --probe --tdata-passcode 本地密码
+tg_down account login --probe --probe-timeout 30s
+```
+
+自动查找顺序：`%APPDATA%\Telegram Desktop\tdata` → `%APPDATA%\TelegramDesktop\tdata` →
+`%LOCALAPPDATA%\Telegram Desktop\tdata`，都没有就用 `--tdata` 指定。
+
+```
+  tdata     C:\Users\me\AppData\Roaming\Telegram Desktop\tdata
+  账号数    1
+
+  ── 账号 #0 ──
+  账号      ...
+  账号 ID   355927778
+  用户名    @ma6254
+  手机号    +861****364
+
+  已登录客户端（2）
+  * Telegram Desktop · PC · Hong Kong · 最近活跃 2026-11-18 22:47
+    Telegram Android · Android · Xiaomi 14 Pro · Tai Wai, Hong Kong · 最近活跃 2026-11-18 22:31
+```
+
+说明：
+
+- 探测成功后：授权写入 `<session-dir>/mtproto-<手机号>.json`（文件已存在时保留原文件），
+  账号记录 upsert 到 `accounts` 表，随后可直接 `account list` / `account switch` 使用；
+  如果导入后库里只有一个账号，会自动设为当前账号。
+- 网络超时默认 **30 秒**，用 `--probe-timeout` 调整；超时会提示检查 `http_proxy` 配置。
+- 代理与登录一致，只从配置 `http_proxy` 读取；输出会提示当前是否走代理。
+- tdata 设置了本地密码时，需要 `--tdata-passcode`；口令错误会提示解析失败。
+- 一个 tdata 里可能有多个账号，会逐个探测并分别导入。
+- 只读操作：不写回 tdata；连接以 Desktop 同一应用身份（api_id 2040）进行。
+
+### 探测本工具自己的 session
+
+`--probe-session` 是另一个功能：检查 `sessions/` 下由本工具保存的 session 是否仍有效。
+
+```bash
+tg_down account login --probe-session
+tg_down account login --probe-session --phone +8613800000000
+```
+
+输出 session 路径、登录状态、账号信息与已登录客户端；session 已失效时退出码仍为 0，
+只在状态里标「未授权」——那是探测结果，不是失败。session 定位顺序：
+`--session` → 按 `--phone` 推导 → `--session-dir` 下唯一的 `mtproto-*.json`。
+
+### 查看与退出
+
+```bash
+tg_down account list               # 账号总览（别名 ls）
+tg_down account info 3             # 查看账号详情（别名 show）
+tg_down account info               # 查看当前账号详情
+tg_down account info --live        # 额外联网查询资料与已登录设备（不落库）
+tg_down account switch 3           # 按账号 ID 切换当前账号（别名 use）
+tg_down account switch             # 显示当前账号
+tg_down account logout 3           # 按 ID 退出登录
+tg_down account logout my_bot      # 按展示名 / 手机号（别名 remove / delete）
+tg_down account logout --all --yes # 删除全部账号
+```
+
+`info` 默认只读本地数据库，展示 ID、类型、名称、用户名、手机号（脱敏）、状态、
+会员、session 路径与创建/更新时间；不带参数取当前账号，带参数取指定 ID。
+
+加 `--live` 会临时连一次 Telegram，查询服务端最新资料（账号名、用户名、手机号、
+生日、简介）与已登录客户端列表——**只展示，不写入数据库**，超时 30 秒。
+
+「会员」一行固定输出：离线时为「未知（加 --live 查询）」，`--live` 成功后会变成「是 / 否」，
+来源于服务端 `user.premium`（只知道当前是否有效，拿不到到期时间）。
+
+```
+$ tg_down account info --live
+
+正在联网查询资料（不落库）…
+
+账号信息（当前账号）
+  ID        1
+  类型      mtproto
+  名称      9a6c 5609806a
+  用户名    @ma6254
+  手机号    +861****364
+  状态      authed
+  会员      否
+  session   ./sessions/mtproto-8613754320364.json
+  创建时间  2026-11-19 00:10
+  更新时间  2026-11-19 00:10
+
+在线资料
+  账号        9a6c 5609806a
+  用户名      @ma6254
+  手机号      +861****364
+  生日        1999-02-07
+  简介        -
+
+已登录客户端（2）
+  * Telegram Desktop · PC · Hong Kong · 最近活跃 2026-11-18 23:57
+    Telegram Android · Android · Xiaomi 14 Pro · ... · 最近活跃 2026-11-18 22:31
+
+  * 表示当前会话
+```
+
+`switch` 只接受 `account list` 第一列显示的**账号 ID**（纯数字），切换前会确认该账号的
+session 文件存在；手机号、session 文件名等写法不再支持。选择结果保存在数据库的
+`settings.current_account_id`，`list` 会用 `*` 标出当前账号。
+
+```
+$ tg_down account switch 3
+已切换当前账号
+  ID       3
+  名称     主号
+  session  mtproto-8613800000000.json
+
+$ tg_down account list
+
+本地账号（1）
+     ID   类型     名称   手机号         状态     session
+  *  3    mtproto  主号   +861****000   authed   mtproto-8613800000000.json
+
+  * 表示当前账号（account switch 切换）
+```
+
+`list` 只读本地数据库（`~/.tg_down/data.db` 的 `accounts` 表），由 `account login` / `--probe`
+写入，不联网、没有额外参数。
+
+需要查看本机 Telegram Desktop 的账号（以及已登录设备）时，用 `account login --probe`。
+
+`logout` 参数：
+
+| 参数 | 说明 |
+|---|---|
+| `<账号ID\|名称>` | 二选一：纯数字按 ID，其余按展示名 / 手机号 |
+| `--all` | 删除全部账号，不能与目标同时指定 |
+| `--yes` | 跳过交互确认（不确认时会提示输入 yes） |
+
+退出登录会删除数据库记录与对应 session 文件，不可恢复；已下载的文件不受影响。
+
+> 当前状态：`login`（mtproto）、`list`、`switch`、`logout` 均已接入 SQLite；`botapi` 登录尚未接入。
+
+## 数据目录与数据库
+
+运行数据默认放在 `~/.tg_down/`（Windows：`C:\Users\<你>\.tg_down\`），首次运行时自动创建（权限 `0700`）：
+
+```
+~/.tg_down/
+  data.db      # SQLite：accounts（账号）+ settings（系统配置）
+```
+
+- 用环境变量 `TG_DOWN_HOME` 可以改目录，例如指向同步盘或 U 盘。
+- 数据库使用纯 Go 驱动（`glebarez/sqlite` → `modernc.org/sqlite`），**不需要 CGO / gcc**。
+- `accounts` 表字段：`id / kind / name / phone / username / session_path / state / last_error / created_at / updated_at`。
+- `settings` 表字段：`key / value / updated_at`。
+- session 文件本身仍在 `--session-dir`（默认 `./sessions`）下，数据库只记录其路径；token、session 内容不写入数据库。
+
+## 系统配置
+
+配置存在数据库的 `settings` 表，用 `config` 命令读写：
+
+```bash
+tg_down config list                     # 列出全部配置（别名 ls）
+tg_down config get http_proxy           # 读取单项
+tg_down config set http_proxy http://127.0.0.1:7897
+tg_down config unset http_proxy         # 删除（别名 delete / remove）
+tg_down config export                   # 导出为 YAML（默认输出到终端）
+tg_down config export -f json
+tg_down config export -f toml -o config.toml
+tg_down config import config.yaml           # 按扩展名自动识别格式，合并恢复
+tg_down config import config.toml --replace # 用文件重置已知配置项
+tg_down config import backup.json -f json   # 扩展名不对时手动指定
+```
+
+当前支持：
+
+| 键 | 说明 |
+|---|---|
+| `http_proxy` | 出站代理，支持 `http://`、`https://`、`socks5://`、`socks5h://`；登录与下载都会使用 |
+| `current_account_id` | 当前选中的账号 ID，由 `account switch` 维护（手工设置需填已存在的账号 ID） |
+
+> 配置项的定义、校验与展示脱敏集中在 `internal/config` 包，命令层只负责读写与输出；
+> 新增配置项只需在 `config.items` 里登记一条。
+>
+> 导入导出能力是库函数：`Store.ExportJSON()` / `ExportYAML()` / `ExportTOML()` /
+> `Store.Export(Format)`，以及 `Store.Import(Format, data)` / `Store.Replace(Format, data)`。
+> TOML 由内置编码器输出（稳定排序、合规转义），导入使用 `github.com/BurntSushi/toml` 解码；
+> YAML 使用 `gopkg.in/yaml.v3`。
+>
+> 导入语义：默认**合并**，只覆盖文件中出现的配置项；`--replace` 会先用文件重置已知配置项
+> （文件中缺失的已知项被删除）。文件里未登记的键会被跳过并在输出里列出。
+
+代理只从配置读取：设置 `http_proxy` 后登录与下载都走它，未配置则直连；没有对应的命令行参数。
+
+- 设置时会校验协议与主机，非法值直接拒绝。
+- `config list` / `config get` 输出时会隐藏代理密码（`http://user:***@host`）。
+- 目前 `config.json` 文件尚未接入；数据库配置是当前生效的那一层。
 
 ## 配置（规划中）
 
 优先级：命令行参数 > 环境变量（`TG_DOWN_*`）> `config.json` > 内置默认值。
+
+> 注：配置文件与环境变量尚未接入，当前仅命令行参数与数据库 `settings` 生效。
 
 | 字段 | 默认值 | 说明 |
 |---|---|---|

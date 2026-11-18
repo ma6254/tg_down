@@ -1,51 +1,58 @@
-/*
-Copyright © 2026 NAME HERE <EMAIL ADDRESS>
-
-*/
+// Package cmd 是命令行入口：只负责参数解析、校验与进程生命周期，
+// 业务逻辑下沉到 internal/ 各层。
 package cmd
 
 import (
+	"fmt"
 	"os"
 
 	"github.com/spf13/cobra"
+
+	"github.com/ma6254/tg_down/internal/build"
 )
 
+var (
+	opts    = newOptions() // 服务参数，root 与 serve 共用
+	cfgPath string         // 配置文件路径
+	workDir string         // 启动前切换的工作目录
+)
 
-
-// rootCmd represents the base command when called without any subcommands
+// rootCmd 是根命令：不带子命令时直接启动服务。
 var rootCmd = &cobra.Command{
 	Use:   "tg_down",
-	Short: "A brief description of your application",
-	Long: `A longer description that spans multiple lines and likely contains
-examples and usage of using your application. For example:
+	Short: "Telegram 下载工具",
+	Long: `tg_down 把 Telegram 里能看到的媒体下载到本地磁盘。
 
-Cobra is a CLI library for Go that empowers applications.
-This application is a tool to generate the needed files
-to quickly create a Cobra application.`,
-	// Uncomment the following line if your bare application
-	// has an action associated with it:
-	// Run: func(cmd *cobra.Command, args []string) { },
+默认启动常驻服务，同时提供 /api 接口与 Web 界面：
+  tg_down                          等价于 tg_down serve
+  tg_down serve --listen :22429    指定监听地址
+
+服务默认只监听回环地址（127.0.0.1）；绑定到非回环地址时必须提供
+--auth-token，否则拒绝启动。`,
+	Args:          cobra.NoArgs,
+	SilenceUsage:  true,
+	SilenceErrors: true,
+	RunE:          runServe,
 }
 
-// Execute adds all child commands to the root command and sets flags appropriately.
-// This is called by main.main(). It only needs to happen once to the rootCmd.
+// Execute 是程序入口，由 main 调用。
 func Execute() {
-	err := rootCmd.Execute()
-	if err != nil {
+	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, "错误:", err)
 		os.Exit(1)
 	}
 }
 
 func init() {
-	// Here you will define your flags and configuration settings.
-	// Cobra supports persistent flags, which, if defined here,
-	// will be global for your application.
+	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "", "配置文件路径（默认 ./config.json，不存在则用内置默认值）")
+	rootCmd.PersistentFlags().StringVar(&workDir, "workdir", "", "启动前切换的工作目录，数据与下载路径都相对于它解析")
+	opts.bind(rootCmd.PersistentFlags())
 
-	// rootCmd.PersistentFlags().StringVar(&cfgFile, "config", "", "config file (default is $HOME/.tg_down.yaml)")
+	rootCmd.AddCommand(serveCmd, accountCmd, configCmd, versionCmd)
 
-	// Cobra also supports local flags, which will only run
-	// when this action is called directly.
-	rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle")
+	// 让帮助里的命令列表显示别称（如 list 的 ls）。
+	applyUsageTemplate(rootCmd)
+
+	// rootCmd 的版本信息交给 version 子命令，--version 直接复用。
+	rootCmd.Version = build.Version
 }
-
-

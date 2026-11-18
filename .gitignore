@@ -46,6 +46,9 @@ coverage.html
 /log/
 /tmp/
 /.tmp/
+/.gocache/
+/.gomodcache/
+/vendor/
 
 # ---------------------------------------------------------------------------
 # 账号敏感信息：Telegram session、bot token、导出的会话
