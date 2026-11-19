@@ -3,6 +3,7 @@ package utils
 import (
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -37,6 +38,72 @@ func TestResolveProxy(t *testing.T) {
 	}
 	if got != "http://127.0.0.1:7897" {
 		t.Errorf("期望读取配置表代理，实际 %q", got)
+	}
+
+	// http_proxy_enabled=false 时即使配置了代理也应直连。
+	db, err = OpenDatabase()
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	if err := config.NewStore(db).Set(config.KeyHTTPProxyEnabled, "false"); err != nil {
+		t.Fatalf("关闭代理失败: %v", err)
+	}
+	db.Close()
+
+	got, err = ResolveProxy()
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got != "" {
+		t.Errorf("关闭代理后应直连，实际 %q", got)
+	}
+
+	db, err = OpenDatabase()
+	if err != nil {
+		t.Fatalf("打开数据库失败: %v", err)
+	}
+	if err := config.NewStore(db).Set(config.KeyHTTPProxyEnabled, "true"); err != nil {
+		t.Fatalf("启用代理失败: %v", err)
+	}
+	db.Close()
+
+	got, err = ResolveProxy()
+	if err != nil {
+		t.Fatalf("解析失败: %v", err)
+	}
+	if got != "http://127.0.0.1:7897" {
+		t.Errorf("重新启用后应使用代理，实际 %q", got)
+	}
+}
+
+// TestOpenDatabaseConcurrent 覆盖空库首次并发打开/建表。
+//
+// 服务端每个请求都会 OpenDatabase；首次并发请求若同时 AutoMigrate，
+// 曾出现 "index ... already exists" 导致 500。
+func TestOpenDatabaseConcurrent(t *testing.T) {
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
+
+	const workers = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			db, err := OpenDatabase()
+			if err == nil {
+				err = db.Close()
+			}
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		if err != nil {
+			t.Errorf("并发打开数据库失败: %v", err)
+		}
 	}
 }
 

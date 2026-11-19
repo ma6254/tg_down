@@ -38,7 +38,8 @@ func OpenDatabase() (*database.DB, error) {
 	return db, nil
 }
 
-// ResolveProxy 从配置读取 http_proxy，未配置时返回空串（直连）。
+// ResolveProxy 从配置读取实际生效的代理：
+// http_proxy_enabled=false 或未配置 http_proxy 时返回空串（直连）。
 func ResolveProxy() (string, error) {
 	db, err := OpenDatabase()
 	if err != nil {
@@ -46,14 +47,11 @@ func ResolveProxy() (string, error) {
 	}
 	defer db.Close()
 
-	value, ok, err := config.NewStore(db).Get(config.KeyHTTPProxy)
+	proxy, err := config.NewStore(db).Proxy()
 	if err != nil {
-		return "", fmt.Errorf("读取 %s: %w", config.KeyHTTPProxy, err)
+		return "", fmt.Errorf("读取代理配置: %w", err)
 	}
-	if !ok {
-		return "", nil
-	}
-	return value, nil
+	return proxy, nil
 }
 
 // ErrRecordNotFound 暴露 gorm 的未找到错误，方便命令层判断。

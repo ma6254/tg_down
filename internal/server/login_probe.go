@@ -101,7 +101,7 @@ func (s *Server) handleLoginProbe(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			writeError(w, http.StatusGatewayTimeout, "probe_timeout",
-				fmt.Sprintf("探测超时（%s）：请检查网络或代理配置（config set http_proxy …），或用 timeout_seconds 调大", timeout))
+				fmt.Sprintf("探测超时（%s）：请检查网络或代理配置（config set http_proxy …，并确认 http_proxy_enabled 为 true），或用 timeout_seconds 调大", timeout))
 			return
 		}
 		// tdata 不存在、本地密码错误、没有已登录账号等都属于「改输入即可修复」，

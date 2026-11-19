@@ -3,7 +3,6 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	accountsvc "github.com/ma6254/tg_down/internal/account"
@@ -29,12 +28,10 @@ func probeLogin(ctx context.Context, req server.ProbeRequest) (server.ProbeRespo
 	}
 	defer db.Close()
 
-	// 出站代理来自配置表 http_proxy，与 CLI 的 resolveProxy 一致。
-	proxy := ""
-	if value, ok, err := config.NewStore(db).Get(config.KeyHTTPProxy); err != nil {
-		return server.ProbeResponse{}, fmt.Errorf("读取 %s: %w", config.KeyHTTPProxy, err)
-	} else if ok {
-		proxy = strings.TrimSpace(value)
+	// 出站代理来自配置表：http_proxy_enabled=false 时直连。
+	proxy, err := config.NewStore(db).Proxy()
+	if err != nil {
+		return server.ProbeResponse{}, fmt.Errorf("读取代理配置: %w", err)
 	}
 
 	result, err := probeDesktop(ctx, mtproto.DesktopProbeOptions{

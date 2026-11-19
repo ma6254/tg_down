@@ -45,6 +45,11 @@ func updateSettings(ctx context.Context, patch server.SettingsPatch) ([]server.S
 	}
 	defer db.Close()
 
+	store := config.NewStore(db)
+
+	// 先整体校验再写入，避免写一半失败留下半套配置。
+	// 代理密码读取时被脱敏为 ***；编辑时如果原样提交回来，用现有密码回填，
+	// 否则会把 *** 当成新密码写进库。
 	for key, value := range patch {
 		item, ok := config.Lookup(key)
 		if !ok {
@@ -53,7 +58,22 @@ func updateSettings(ctx context.Context, patch server.SettingsPatch) ([]server.S
 		if readOnlySettings[key] {
 			return nil, fmt.Errorf("%w: %s 由账号接口维护，请用 POST /api/v1/accounts/{id}/select", server.ErrSettingInvalid, key)
 		}
-		if value == nil || item.Validate == nil {
+		if value == nil {
+			continue
+		}
+		if key == config.KeyHTTPProxy {
+			current, _, err := store.Get(config.KeyHTTPProxy)
+			if err != nil {
+				return nil, fmt.Errorf("读取现有代理: %w", err)
+			}
+			merged, err := config.MergeMaskedProxy(current, *value)
+			if err != nil {
+				return nil, fmt.Errorf("%w: %v", server.ErrSettingInvalid, err)
+			}
+			value = &merged
+			patch[key] = value
+		}
+		if item.Validate == nil {
 			continue
 		}
 		if err := item.Validate(*value); err != nil {
@@ -61,7 +81,6 @@ func updateSettings(ctx context.Context, patch server.SettingsPatch) ([]server.S
 		}
 	}
 
-	store := config.NewStore(db)
 	for key, value := range patch {
 		var err error
 		if value == nil {
@@ -87,8 +106,12 @@ func listSettings(db *database.DB) ([]server.Setting, error) {
 	out := make([]server.Setting, 0, len(entries))
 	for _, entry := range entries {
 		setting := server.Setting{
-			Key:      entry.Key,
-			Value:    entry.Value,
+			Key: entry.Key,
+			// 类型/默认值由代码里的 config.items 定义驱动；旧库启动时也会被 SyncTypes 修正。
+			Type:    entry.Type,
+			Default: entry.Default,
+			// 代理密码不回传明文；前端编辑时按 *** 语义回填。
+			Value:    config.Mask(entry.Key, entry.Value),
 			Known:    entry.Known,
 			ReadOnly: readOnlySettings[entry.Key],
 		}

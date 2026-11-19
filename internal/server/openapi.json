@@ -462,6 +462,7 @@
         "type": "object",
         "required": [
           "key",
+          "type",
           "value",
           "known"
         ],
@@ -469,6 +470,15 @@
           "key": {
             "type": "string",
             "example": "http_proxy"
+          },
+          "type": {
+            "type": "string",
+            "description": "值的逻辑类型：string / integer / boolean。Value 本身仍以字符串存储。",
+            "example": "string"
+          },
+          "default": {
+            "type": "string",
+            "description": "未配置时使用的默认值；为空表示没有默认值。"
           },
           "value": {
             "type": "string",

@@ -14,7 +14,9 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ma6254/tg_down/internal/build"
+	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/server"
+	"github.com/ma6254/tg_down/internal/utils"
 )
 
 // serveShutdownTimeout 是收到退出信号后等待在途请求结束的上限。
@@ -40,6 +42,12 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		}
 	}
 	if err := opts.validate(); err != nil {
+		return err
+	}
+
+	// 先完成建表/迁移再监听：并发首个请求各自 OpenDatabase 会同时 AutoMigrate，
+	// 提前初始化可以避免迁移竞态，也能让数据库错误在启动阶段暴露。
+	if err := prepareDatabase(); err != nil {
 		return err
 	}
 
@@ -71,6 +79,26 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	addr := ln.Addr().String()
 	printStartupInfo(addr)
 	return serveUntilSignal(cmd.Context(), srv, ln, addr)
+}
+
+// prepareDatabase 在开始监听前完成建表与迁移。
+func prepareDatabase() error {
+	db, err := utils.OpenDatabase()
+	if err != nil {
+		return fmt.Errorf("初始化数据库: %w", err)
+	}
+	if err := config.SyncTypes(db); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("同步配置类型: %w", err)
+	}
+	if err := config.SeedDefaults(db); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("初始化默认配置: %w", err)
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("关闭数据库: %w", err)
+	}
+	return nil
 }
 
 // serveUntilSignal 运行 HTTP 服务，收到 Ctrl+C 或 SIGTERM 后优雅关闭。

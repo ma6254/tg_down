@@ -11,8 +11,13 @@ import (
 var ErrSettingInvalid = errors.New("配置项不可写")
 
 // Setting 是一个配置项。
+//
+// Value 是展示值：http_proxy 的密码会被脱敏为 ***，不会回传明文。
+// Type 是值的逻辑类型（string / integer / boolean），由后端配置定义决定。
 type Setting struct {
 	Key         string `json:"key"`
+	Type        string `json:"type"`
+	Default     string `json:"default,omitempty"`
 	Value       string `json:"value"`
 	Description string `json:"description,omitempty"`
 	Known       bool   `json:"known"`               // 是否为程序认识的配置项

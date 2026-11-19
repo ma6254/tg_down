@@ -4,7 +4,7 @@ Telegram 下载工具的 Go 后端。
 
 把 Telegram 里能看到的媒体按任务队列下载到本地磁盘：单用户、本地优先，默认只监听 `127.0.0.1`；需要对外暴露时再启用 Bearer token。前端是一个 React 单页应用，构建后通过 `go:embed` 打进同一个可执行文件。
 
-> **状态：脚手架阶段（M0）**。目前只有 cobra 命令入口，HTTP 服务、数据库与下载逻辑尚未实现。完整规划见 [规划文档](./doc/plan.md)。
+> **状态：HTTP 服务已接入账号与配置接口**。已实现账号探测/列表/切换/详情与配置读写；会话、消息、下载与前端内嵌尚未接入。完整规划见 [规划文档](./doc/plan.md)，接口见 [API 草案](./doc/api.md)。
 
 ## 规划中的能力
 
@@ -43,12 +43,12 @@ webembed/          go:embed 前端产物
 ```bash
 go run . --help                   # 查看全部命令与参数
 go run . version                  # 版本与构建信息
-go run .                          # 等价于 serve：校验参数并打印生效配置
+go run . serve                    # 启动 HTTP 服务（127.0.0.1:22429）
 go build -o tg_down.exe .         # 构建
 ```
 
-HTTP 服务本体尚未接入（M1）：`serve` 目前只做参数校验并打印启动信息，
-随后以非零码退出，避免"启动成功但什么都没发生"。
+启动后可访问 `http://127.0.0.1:22429/api/v1/health` 与 `/swagger/`；
+前端的 Web 界面尚未内嵌，开发期用 `../tg_down_web` 的 Vite 代理访问。
 
 ## 命令行参数
 
@@ -80,6 +80,8 @@ tg_down account login --phone +8613800000000
 
 # 需要代理时先写入配置（Clash 等），后续命令自动使用
 tg_down config set http_proxy http://127.0.0.1:7897
+# 临时关闭代理（保留地址）
+tg_down config set http_proxy_enabled false
 tg_down account login --phone +8613800000000
 
 # 使用自备应用凭据（推荐长期使用，配额独立）
@@ -123,7 +125,8 @@ tg_down account login --probe-session
 无需再执行 `account switch`；有多个账号时保持原有选择。
 
 代理支持 `socks5` / `socks5h`（远端 DNS）与 `http` / `https`（CONNECT 隧道），后续下载同样走它。
-也可以用 `tg_down config set http_proxy ...` 持久化代理，未配置时直连。
+也可以用 `tg_down config set http_proxy ...` 持久化代理，未配置时直连；
+`http_proxy_enabled=false`（默认 true）会保留代理地址但强制直连。
 
 校验规则：`mtproto` 必须有合法手机号且不接受 `--token`；`--api-id` 与 `--api-hash` 必须成对提供；
 `--app custom` 必须带 api 凭据；`botapi` 必须有形态合法的 token 且不接受 `--phone`/`--code`/`--password`。
@@ -168,7 +171,7 @@ tg_down account login --probe --probe-timeout 30s
   账号记录 upsert 到 `accounts` 表，随后可直接 `account list` / `account switch` 使用；
   如果导入后库里只有一个账号，会自动设为当前账号。
 - 网络超时默认 **30 秒**，用 `--probe-timeout` 调整；超时会提示检查 `http_proxy` 配置。
-- 代理与登录一致，只从配置 `http_proxy` 读取；输出会提示当前是否走代理。
+- 代理与登录一致，只从配置 `http_proxy` / `http_proxy_enabled` 读取；输出会提示当前是否走代理。
 - tdata 设置了本地密码时，需要 `--tdata-passcode`；口令错误会提示解析失败。
 - 一个 tdata 里可能有多个账号，会逐个探测并分别导入。
 - 只读操作：不写回 tdata；连接以 Desktop 同一应用身份（api_id 2040）进行。
@@ -314,6 +317,7 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 | 键 | 说明 |
 |---|---|
 | `http_proxy` | 出站代理，支持 `http://`、`https://`、`socks5://`、`socks5h://`；登录与下载都会使用 |
+| `http_proxy_enabled` | 布尔值，默认 `true`；`false` 时保留 `http_proxy` 但强制直连 |
 | `current_account_id` | 当前选中的账号 ID，由 `account switch` 维护（手工设置需填已存在的账号 ID） |
 
 > 配置项的定义、校验与展示脱敏集中在 `internal/config` 包，命令层只负责读写与输出；
@@ -327,7 +331,10 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 > 导入语义：默认**合并**，只覆盖文件中出现的配置项；`--replace` 会先用文件重置已知配置项
 > （文件中缺失的已知项被删除）。文件里未登记的键会被跳过并在输出里列出。
 
-代理只从配置读取：设置 `http_proxy` 后登录与下载都走它，未配置则直连；没有对应的命令行参数。
+代理只从配置读取：`http_proxy_enabled` 为 true（默认）且配置了 `http_proxy` 时登录与下载都走它，否则直连；没有对应的命令行参数。
+
+服务启动时如果 `settings` 表为空，会写入 `http_proxy_enabled=true` 作为默认配置；
+`http_proxy` 的默认值是空串（未配置），不会写入空行。
 
 - 设置时会校验协议与主机，非法值直接拒绝。
 - `config list` / `config get` 输出时会隐藏代理密码（`http://user:***@host`）。

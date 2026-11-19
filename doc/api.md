@@ -3,7 +3,7 @@
 所有接口前缀 `/api/v1`，JSON 收发，SSE 用于进度推送。
 
 - 默认只监听 `127.0.0.1`，此时不需要 token。
-- 对外暴露（非回环地址）时，除 `GET /health` 外全部要求 `Authorization: Bearer <token>`。
+- 对外暴露（非回环地址）时，除静态资源与 `/api/openapi.json` 外，所有 `/api/*`（**包括 health**）都要求 `Authorization: Bearer <token>`。
 - 单用户模型，没有用户注册与登录会话；token 即身份。
 
 ## 通用
@@ -33,19 +33,19 @@
 ### 健康检查
 
 ```
-GET /health
-→ 200 {"status":"ok","version":"0.1.0","auth_required":false}
+GET /api/v1/health
+→ 200 {"status":"ok","version":"0.1.0","uptime_seconds":123}
 ```
+
+启用 token 后该接口同样要求 Bearer token；`uptime_seconds` 便于确认进程是否刚重启。
 
 ## 客户端初始化
 
-前端启动先探一次，决定是否显示 token 输入页：
+没有匿名的 `/session` 探测接口；前端直接用 health 判断：
 
-```
-GET /api/v1/session
-→ 200 {"auth_required":true,"authenticated":false}
-→ 200 {"auth_required":false,"authenticated":true}
-```
+- 200：后端可用（免鉴权，或已有 token 有效）
+- 401：需要 token，展示登录页
+- 网络错误 / 5xx：展示离线页并允许重试
 
 ## 账号
 
@@ -293,27 +293,42 @@ data: {}
 
 ## 设置
 
+配置是「键 → 字符串」的扁平表，接口返回数组（不是对象）：
+
 ```
 GET /api/v1/settings
 → 200 {
-  "download_dir": "D:/downloads",
-  "max_concurrency": 3,
-  "botapi_base_url": "",          // 空 = 官方 https://api.telegram.org
-  "proxy": "",                    // socks5://127.0.0.1:1080
-  "naming": "chat_dir",           // flat | chat_dir
-  "auto_start": true
+  "settings": [
+    {"key":"current_account_id","type":"integer","value":"1","description":"当前选中的账号 ID（由 account switch 维护）","known":true,"read_only":true},
+    {"key":"http_proxy","type":"string","value":"http://user:***@127.0.0.1:7897","description":"出站代理…","known":true},
+    {"key":"http_proxy_enabled","type":"boolean","default":"true","value":"true","description":"是否启用 http_proxy…","known":true}
+  ]
 }
 
 PUT /api/v1/settings
-body: {"max_concurrency":2}
+body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
 → 200 {完整设置}
 ```
 
-校验：`max_concurrency` ∈ [1,8]；`download_dir` 必须存在且可写（服务端 `os.Stat` 检查）。
+- `type` 是值的逻辑类型（`string` / `integer` / `boolean`），由后端 `config.items` 定义；
+  `value` 仍以字符串存储，前端可据此选择输入控件。
+- `default` 是未配置时使用的默认值；目前只有 `http_proxy_enabled` 有默认值 `"true"`。
+- 服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
+  （当前只有 `http_proxy_enabled=true`）；空默认值表示未配置，不会落库。
+- 只允许写 `config.items` 里登记的键；`current_account_id` 只读，由账号接口维护。
+- **代理密码脱敏**：`http_proxy` 的密码在响应里固定返回 `***`，不会回传明文。
+  提交时如果密码仍是 `***`，服务端沿用已保存的密码（Web 可以只改主机/端口而不重输密码）；
+  要更换密码请提交完整 URL。
+- **代理开关**：`http_proxy_enabled` 是布尔值，未配置时视为 `true`；
+  设为 `false` 后即使 `http_proxy` 有值也直连，代理地址本身保留。
+  清除该键会恢复默认（启用）。
+- 清除代理：`{"http_proxy": null}`。
+- 未知键、非法值、只读键返回 400 `bad_request`。
 
 ## 代理与网络
 
-- `proxy` 同时作用于 MTProto 连接与 Bot API HTTP 客户端。
+- 实际生效代理 = `http_proxy_enabled` 为 true **且** `http_proxy` 非空时使用 `http_proxy`（支持 http/https/socks5/socks5h），否则直连。
+- 代理同时作用于 MTProto 连接与 Bot API HTTP 客户端；`http_proxy_enabled=false` 时登录与探测也直连。
 - 修改后不重启进程，但运行中任务沿用旧连接，新任务生效。
 
 ## 版本演进

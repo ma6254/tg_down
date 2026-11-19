@@ -34,14 +34,14 @@ func runDesktopProbe(ctx context.Context, lo *loginOptions, proxy string) error 
 	if proxy != "" {
 		fmt.Printf("使用代理 %s\n", config.Mask(config.KeyHTTPProxy, proxy))
 	} else {
-		fmt.Println("未配置代理（config set http_proxy …），将直连 Telegram")
+		fmt.Println("未启用 HTTP 代理或未配置 http_proxy（config set http_proxy … / http_proxy_enabled true），将直连 Telegram")
 	}
 
 	desktop := mtproto.Desktop{TDataPath: lo.TData, Passcode: lo.TDataPasscode, Proxy: proxy}
 	result, err := desktop.Probe(probeCtx)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			return fmt.Errorf("探测超时（%s）：请检查网络或代理配置（config set http_proxy …），或用 --probe-timeout 调大", timeout)
+			return fmt.Errorf("探测超时（%s）：请检查网络或代理配置（config set http_proxy …，并确认 http_proxy_enabled 为 true），或用 --probe-timeout 调大", timeout)
 		}
 		return err
 	}
