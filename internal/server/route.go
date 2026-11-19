@@ -23,6 +23,9 @@ func (s *Server) routes() *http.ServeMux {
 	// 账号详情：等价于 account info <id>。
 	mux.HandleFunc("GET /api/v1/accounts/{id}", s.handleAccountGet)
 
+	// 在线资料：等价于 account info <id> --live（联网查询，不落库）。
+	mux.HandleFunc("GET /api/v1/accounts/{id}/live", s.handleAccountLive)
+
 	// 切换当前账号：等价于 account switch <id>。
 	mux.HandleFunc("POST /api/v1/accounts/{id}/select", s.handleAccountSelect)
 

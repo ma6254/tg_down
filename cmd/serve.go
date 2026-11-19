@@ -70,6 +70,8 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		SelectAccount: selectAccount,
 		// 账号详情：account info <id> 的 HTTP 版。
 		GetAccount: getAccount,
+		// 在线资料：account info <id> --live 的 HTTP 版（联网查询，不落库）。
+		GetAccountLive: getAccountLive,
 		// 系统配置：config list / set / unset 的 HTTP 版。
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,

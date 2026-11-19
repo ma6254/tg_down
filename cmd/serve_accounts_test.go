@@ -2,10 +2,12 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	accountsvc "github.com/ma6254/tg_down/internal/account"
 	"github.com/ma6254/tg_down/internal/database"
+	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/utils"
 )
 
@@ -69,5 +71,37 @@ func TestListAccounts(t *testing.T) {
 	}
 	if got.CreatedAt == 0 {
 		t.Error("created_at 未填充")
+	}
+}
+
+// TestGetAccountLiveNotFound 确认不存在的账号直接返回 ErrAccountNotFound。
+func TestGetAccountLiveNotFound(t *testing.T) {
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
+
+	if _, err := getAccountLive(context.Background(), 99); !errors.Is(err, server.ErrAccountNotFound) {
+		t.Fatalf("err = %v，期望 ErrAccountNotFound", err)
+	}
+}
+
+// TestGetAccountLiveNoSession 确认 session 缺失时在联网前就返回 ErrAccountNoSession。
+func TestGetAccountLiveNoSession(t *testing.T) {
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
+
+	db, err := utils.OpenDatabase()
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	row, err := accountsvc.New(db).Record(accountsvc.RecordInput{
+		Kind: database.AccountKindMTProto,
+		Name: "No Session",
+	})
+	if err != nil {
+		_ = db.Close()
+		t.Fatalf("Record: %v", err)
+	}
+	_ = db.Close()
+
+	if _, err := getAccountLive(context.Background(), row.ID); !errors.Is(err, server.ErrAccountNoSession) {
+		t.Fatalf("err = %v，期望 ErrAccountNoSession", err)
 	}
 }

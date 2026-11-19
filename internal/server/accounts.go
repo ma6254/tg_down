@@ -1,17 +1,20 @@
 package server
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
 )
 
-// 切换当前账号时业务层可以返回的哨兵错误，handler 据此选择状态码。
+// 账号相关业务层可以返回的哨兵错误，handler 据此选择状态码。
 var (
 	// ErrAccountNotFound 表示账号 ID 不存在。
 	ErrAccountNotFound = errors.New("账号不存在")
-	// ErrAccountNoSession 表示账号存在但 session 文件缺失，无法切换。
+	// ErrAccountNoSession 表示账号存在但 session 文件缺失，无法切换或联网查询。
 	ErrAccountNoSession = errors.New("账号的 session 文件不可用")
+	// ErrAccountLiveFailed 表示联网查询失败（网络不可达、Telegram 侧报错、session 已失效等）。
+	ErrAccountLiveFailed = errors.New("联网查询失败")
 )
 
 // Account 是账号列表项。
@@ -35,6 +38,31 @@ type AccountDetail struct {
 	Account
 	UpdatedAt      int64 `json:"updated_at,omitempty"` // Unix 秒
 	SessionPresent bool  `json:"session_present"`      // session 文件是否存在
+}
+
+// AccountBirthday 是在线资料里公开的生日；Year 为 0 表示对方只公开了月日。
+type AccountBirthday struct {
+	Day   int `json:"day"`
+	Month int `json:"month"`
+	Year  int `json:"year,omitempty"`
+}
+
+// AccountLiveInfo 是 GET /api/v1/accounts/{id}/live 的响应：在本地详情之外，
+// 联网查询 Telegram 得到的最新资料与已登录客户端，等价于 CLI 的
+// account info <id> --live。查询结果只在内存里返回，不写数据库。
+type AccountLiveInfo struct {
+	// UserID 是 Telegram 用户 ID，与本地账号记录的自增 id 无关。
+	UserID   int64            `json:"user_id"`
+	Name     string           `json:"name"`
+	Username string           `json:"username,omitempty"`
+	Phone    string           `json:"phone,omitempty"` // Telegram 返回的号码，展示时请打码
+	Bot      bool             `json:"bot,omitempty"`
+	Premium  bool             `json:"premium,omitempty"`
+	About    string           `json:"about,omitempty"`
+	Birthday *AccountBirthday `json:"birthday,omitempty"`
+	// Devices 复用探测接口的客户端结构，前端可以用同一套展示逻辑。
+	Devices   []ProbeDevice `json:"devices"`
+	FetchedAt int64         `json:"fetched_at"` // 查询时间，Unix 秒
 }
 
 // AccountsResponse 是 GET /api/v1/accounts 的响应。
@@ -128,6 +156,39 @@ func (s *Server) handleAccountGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, detail)
+}
+
+// handleAccountLive 处理 GET /api/v1/accounts/{id}/live：
+// 联网查询账号的最新资料与已登录客户端，等价于 CLI 的 account info <id> --live。
+func (s *Server) handleAccountLive(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.GetAccountLive == nil {
+		writeError(w, http.StatusNotImplemented, "not_implemented", "在线资料功能未接入")
+		return
+	}
+
+	id, ok := accountIDFromPath(r)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "bad_request", "账号 ID 必须是正整数")
+		return
+	}
+
+	info, err := s.cfg.GetAccountLive(r.Context(), id)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrAccountNotFound):
+			writeError(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, ErrAccountNoSession):
+			writeError(w, http.StatusConflict, "conflict", err.Error())
+		case errors.Is(err, context.DeadlineExceeded):
+			writeError(w, http.StatusGatewayTimeout, "live_timeout", "联网查询超时，请稍后重试")
+		case errors.Is(err, ErrAccountLiveFailed):
+			writeError(w, http.StatusBadGateway, "live_failed", err.Error())
+		default:
+			writeError(w, http.StatusInternalServerError, "internal_error", "联网查询失败: "+err.Error())
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, info)
 }
 
 // accountIDFromPath 解析路径里的 {id}，非法时返回 ok=false。

@@ -168,6 +168,34 @@ GET /api/v1/accounts/{id}
 DELETE /api/v1/accounts/{id}      → 200 {"ok":true}   清 session/token
 ```
 
+### 在线资料（--live）
+
+等价于 `tg_down account info <id> --live`：临时连一次 Telegram，读取最新资料
+（名称、会员、生日、简介）与已登录客户端。只查询、不写数据库，单次最长 30 秒。
+
+```
+GET /api/v1/accounts/{id}/live
+→ 200 {
+  "user_id": 355927778,          // Telegram 用户 ID，与本地账号记录的 id 无关
+  "name": "张三",
+  "username": "ma6254",
+  "phone": "8613800000000",      // 不带 + 号，展示时打码
+  "premium": true,               // 会员；false 时省略
+  "bot": false,                  // Bot 账号；false 时省略
+  "about": "……",                 // 简介；为空时省略
+  "birthday": {"day": 2, "month": 3, "year": 2000},  // year 省略表示未公开年份
+  "devices": [{                  // 与探测接口的 devices 同构
+    "current": true, "app_name": "Telegram Desktop", "platform": "Windows",
+    "active_at": 1795058692
+  }],
+  "fetched_at": 1795058692       // 查询时间，Unix 秒
+}
+→ 404 账号不存在
+→ 409 账号没有可用的 session 文件（Bot 账号也走这一条）
+→ 502 联网失败：session 已失效、网络不可达或 Telegram 报错
+→ 504 查询超过 30 秒
+```
+
 ## 会话与消息
 
 ```

@@ -563,6 +563,158 @@ func TestAccountGet(t *testing.T) {
 	})
 }
 
+func TestAccountLive(t *testing.T) {
+	t.Run("返回在线资料", func(t *testing.T) {
+		var gotID int64
+		h := New(Config{GetAccountLive: func(_ context.Context, id int64) (AccountLiveInfo, error) {
+			gotID = id
+			return AccountLiveInfo{
+				UserID:   42,
+				Name:     "张三",
+				Username: "zhangsan",
+				Phone:    "8613800000000",
+				Premium:  true,
+				About:    "hi",
+				Birthday: &AccountBirthday{Day: 2, Month: 3, Year: 2000},
+				Devices: []ProbeDevice{{
+					Current: true, AppName: "Telegram Desktop", Platform: "Windows",
+				}},
+				FetchedAt: 1700000000,
+			}, nil
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/3/live", nil)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("状态码 = %d，body = %s", rec.Code, rec.Body.String())
+		}
+
+		var body AccountLiveInfo
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatalf("解析 JSON: %v", err)
+		}
+		if body.UserID != 42 || body.Name != "张三" || !body.Premium || body.About != "hi" {
+			t.Errorf("在线资料 = %+v", body)
+		}
+		if body.Birthday == nil || body.Birthday.Day != 2 || body.Birthday.Month != 3 || body.Birthday.Year != 2000 {
+			t.Errorf("birthday = %+v", body.Birthday)
+		}
+		if len(body.Devices) != 1 || !body.Devices[0].Current {
+			t.Errorf("devices = %+v", body.Devices)
+		}
+		if body.FetchedAt != 1700000000 {
+			t.Errorf("fetched_at = %d", body.FetchedAt)
+		}
+		if gotID != 3 {
+			t.Errorf("业务层收到 id = %d，期望 3", gotID)
+		}
+	})
+
+	t.Run("非法 ID 返回 400", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			t.Fatal("非法 ID 不应进入业务层")
+			return AccountLiveInfo{}, nil
+		}}).Handler()
+
+		for _, path := range []string{"/api/v1/accounts/abc/live", "/api/v1/accounts/0/live"} {
+			rec := doRequest(t, h, http.MethodGet, path, nil)
+			if rec.Code != http.StatusBadRequest {
+				t.Errorf("%s 状态码 = %d，期望 400", path, rec.Code)
+			}
+		}
+	})
+
+	t.Run("账号不存在返回 404", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			return AccountLiveInfo{}, fmt.Errorf("%w: 账号 ID 9 不存在", ErrAccountNotFound)
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/9/live", nil)
+		if rec.Code != http.StatusNotFound {
+			t.Fatalf("状态码 = %d，期望 404", rec.Code)
+		}
+	})
+
+	t.Run("session 缺失返回 409", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			return AccountLiveInfo{}, fmt.Errorf("%w: 账号 #2 的 session 文件不存在", ErrAccountNoSession)
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/2/live", nil)
+		if rec.Code != http.StatusConflict {
+			t.Fatalf("状态码 = %d，期望 409", rec.Code)
+		}
+		var body ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body.Error.Code != "conflict" {
+			t.Errorf("error.code = %q，期望 conflict", body.Error.Code)
+		}
+	})
+
+	t.Run("联网失败返回 502", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			return AccountLiveInfo{}, fmt.Errorf("%w: session 已失效", ErrAccountLiveFailed)
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/1/live", nil)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("状态码 = %d，期望 502", rec.Code)
+		}
+		var body ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body.Error.Code != "live_failed" {
+			t.Errorf("error.code = %q，期望 live_failed", body.Error.Code)
+		}
+	})
+
+	t.Run("查询超时返回 504", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			return AccountLiveInfo{}, fmt.Errorf("查询账号资料: %w", context.DeadlineExceeded)
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/1/live", nil)
+		if rec.Code != http.StatusGatewayTimeout {
+			t.Fatalf("状态码 = %d，期望 504", rec.Code)
+		}
+		var body ErrorResponse
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		if body.Error.Code != "live_timeout" {
+			t.Errorf("error.code = %q，期望 live_timeout", body.Error.Code)
+		}
+	})
+
+	t.Run("内部错误返回 500", func(t *testing.T) {
+		h := New(Config{GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+			return AccountLiveInfo{}, errors.New("database is locked")
+		}}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/1/live", nil)
+		if rec.Code != http.StatusInternalServerError {
+			t.Fatalf("状态码 = %d，期望 500", rec.Code)
+		}
+	})
+
+	t.Run("未接入返回 501", func(t *testing.T) {
+		rec := doRequest(t, newTestHandler(t), http.MethodGet, "/api/v1/accounts/1/live", nil)
+		if rec.Code != http.StatusNotImplemented {
+			t.Fatalf("状态码 = %d，期望 501", rec.Code)
+		}
+	})
+
+	t.Run("需要 token", func(t *testing.T) {
+		h := New(Config{
+			Token: "s3cret",
+			GetAccountLive: func(context.Context, int64) (AccountLiveInfo, error) {
+				return AccountLiveInfo{}, nil
+			},
+		}).Handler()
+
+		rec := doRequest(t, h, http.MethodGet, "/api/v1/accounts/1/live", nil)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("状态码 = %d，期望 401", rec.Code)
+		}
+	})
+}
+
 func TestOpenAPISpec(t *testing.T) {
 	rec := doRequest(t, newTestHandler(t), http.MethodGet, "/api/openapi.json", nil)
 
@@ -591,6 +743,9 @@ func TestOpenAPISpec(t *testing.T) {
 	}
 	if _, ok := doc.Paths["/api/v1/health"]; !ok {
 		t.Errorf("规范缺少 /api/v1/health")
+	}
+	if _, ok := doc.Paths["/api/v1/accounts/{id}/live"]; !ok {
+		t.Errorf("规范缺少 /api/v1/accounts/{id}/live")
 	}
 	if bytes.Contains(rec.Body.Bytes(), []byte(versionPlaceholder)) {
 		t.Error("规范里的版本占位符没有被替换")
