@@ -51,17 +51,65 @@ GET /api/v1/session
 
 同一套接口覆盖 MTProto 用户账号与 Bot API 机器人账号，用 `kind` 区分。
 
+### 探测本机 Telegram Desktop
+
+等价于 `tg_down account login --probe`：读取本机 Telegram Desktop 的 tdata，
+用其中已有的授权逐个连接 Telegram 校验，默认把有效账号导入 `sessions/` 与数据库。
+
+```
+POST /api/v1/accounts/probe
+body: {"tdata":"C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\tdata",  // 留空自动查找
+       "tdata_passcode":"",       // Telegram Desktop 本地密码
+       "timeout_seconds":30,      // 5-300，默认 30
+       "import":true}             // false 时只探测、不落盘
+→ 200 {
+  "tdata_path": "C:\\...\\tdata",
+  "accounts": [{
+    "index": 0,
+    "user_id": 355927778,
+    "name": "...",
+    "username": "ma6254",
+    "phone": "+86138...",
+    "devices": [{"current": true, "app_name": "Telegram Desktop", "platform": "Windows", "active_at": 1795058692}],
+    "error": ""                  // 单个账号失败时写原因，不影响其他账号
+  }],
+  "imported": 1,                 // 新写入的 session 数
+  "skipped": 0,                  // session 文件已存在被保留的数量
+  "selected_account_id": 7       // 导入后库里只剩一个账号时自动选中
+}
+→ 400 {"error":{"code":"probe_failed","message":"未找到 Telegram Desktop 的 tdata 目录…"}}
+→ 504 {"error":{"code":"probe_timeout","message":"探测超时（30s）…"}}
+```
+
 ```
 GET /api/v1/accounts
-→ 200 [{
-  "id": 1,
-  "kind": "mtproto",          // mtproto | botapi
-  "name": "+86****1234",      // bot 则为 username
-  "state": "authed",          // unauthed | authed | error
-  "last_error": null,
-  "created_at": 1763500000
-}]
+→ 200 {
+  "accounts": [{
+    "id": 1,
+    "kind": "mtproto",          // mtproto | botapi
+    "name": "+86****1234",      // bot 则为 username
+    "username": "ma6254",
+    "phone": "8613800000000",   // 不带 + 号，展示时打码
+    "state": "authed",          // unauthed | authed | error
+    "last_error": "",           // 无错误时省略
+    "created_at": 1763500000,   // Unix 秒
+    "current": true             // 是否为当前选中账号
+  }],
+  "current_account_id": 1       // 未选中时省略
+}
 ```
+
+### 切换当前账号
+
+```
+POST /api/v1/accounts/{id}/select
+→ 200 {"ok":true,"current_account_id":3}
+→ 404 {"error":{"code":"not_found","message":"账号不存在: 账号 ID 9 不存在…"}}
+→ 409 {"error":{"code":"conflict","message":"账号的 session 文件不可用…"}}
+```
+
+切换前会确认账号存在、session 文件可读；结果写入 settings.current_account_id，
+`GET /api/v1/accounts` 的 `current` / `current_account_id` 随之变化。
 
 ### Bot 账号接入
 
@@ -101,7 +149,22 @@ body: {"account_id":3,"password":"******"}
 ### 查看 / 登出
 
 ```
-GET    /api/v1/accounts/{id}      → 单个账号详情
+GET /api/v1/accounts/{id}
+→ 200 {
+  "id": 1,
+  "kind": "mtproto",
+  "name": "...",
+  "username": "ma6254",
+  "phone": "8613800000000",
+  "state": "authed",
+  "created_at": 1763500000,
+  "updated_at": 1763500120,      // 从未更新时省略
+  "current": true,
+  "session_present": true        // session 文件是否还在，false 说明需要重新登录
+}
+→ 400 账号 ID 不是正整数
+→ 404 {"error":{"code":"not_found","message":"账号不存在…"}}
+
 DELETE /api/v1/accounts/{id}      → 200 {"ok":true}   清 session/token
 ```
 

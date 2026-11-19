@@ -8,6 +8,7 @@ require (
 	github.com/gotd/td v0.166.1
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
+	github.com/swaggo/files v1.0.1
 	golang.org/x/net v0.57.0
 	golang.org/x/term v0.48.0
 	gopkg.in/yaml.v3 v3.0.1

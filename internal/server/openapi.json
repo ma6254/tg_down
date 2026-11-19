@@ -1,0 +1,777 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "tg_down API",
+    "version": "__VERSION__",
+    "description": "tg_down 的本地 HTTP 接口。默认只监听 127.0.0.1，此时不需要鉴权；对外监听时必须配置 --auth-token，此后 /api/* 要求 Authorization: Bearer <token>。\n\n调试：点右上角 Authorize 填入 --auth-token 的值，再对接口点 Try it out；token 保存在浏览器 localStorage，刷新后仍有效。\n\n当前已实现健康检查与登录探测，其余接口见 doc/api.md，随里程碑逐条补齐。"
+  },
+  "servers": [
+    {
+      "url": "/",
+      "description": "当前服务"
+    }
+  ],
+  "tags": [
+    {
+      "name": "system",
+      "description": "健康检查与运维"
+    },
+    {
+      "name": "accounts",
+      "description": "账号登录与导入"
+    },
+    {
+      "name": "settings",
+      "description": "系统配置"
+    }
+  ],
+  "paths": {
+    "/api/v1/health": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "健康检查",
+        "description": "返回服务状态、版本与运行时长，用于探针和前端启动确认。",
+        "operationId": "getHealth",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "服务正常",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts/probe": {
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "探测本机 Telegram Desktop 的登录",
+        "description": "等价于 CLI 的 account login --probe：读取本机 Telegram Desktop 的 tdata，用其中已有的授权连接 Telegram 校验账号，并把有效账号导入 sessions/ 与数据库。单个账号失败不影响其他账号，原因写在 accounts[].error。",
+        "operationId": "probeLogin",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProbeRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "探测完成；单个账号的失败写在 accounts[].error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProbeResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入登录探测",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "账号列表",
+        "description": "返回数据库里的全部账号，按创建时间倒序；current 标出当前选中的账号。等价于 CLI 的 account list。",
+        "operationId": "listAccounts",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "账号列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入账号列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/accounts/{id}": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "账号详情",
+        "description": "返回单个账号的详情，等价于 CLI 的 account info <id>。只读本地数据库；session_present 表示 session 文件是否仍然存在。",
+        "operationId": "getAccount",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "账号 ID（GET /api/v1/accounts 里的 id）",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "账号详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AccountDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入账号详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/accounts/{id}/select": {
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "切换当前账号",
+        "description": "把指定账号设为当前账号，等价于 CLI 的 account switch <id>。切换前会校验账号存在且 session 文件可用。",
+        "operationId": "selectAccount",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "账号 ID（GET /api/v1/accounts 里的 id）",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "切换成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SelectAccountResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "账号的 session 文件缺失，无法切换",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入切换功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/settings": {
+      "get": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "读取全部配置",
+        "description": "返回数据库里的全部配置项，等价于 CLI 的 config list。http_proxy 的值是明文，接口本身由 Bearer token 保护；直接展示给多人前请自行打码。",
+        "operationId": "getSettings",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "配置列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入配置读取",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "settings"
+        ],
+        "summary": "修改配置",
+        "description": "部分更新：只写请求体里出现的键，值为 null 表示删除该项（config unset），返回更新后的全量配置。current_account_id 只读，切换账号请用 POST /api/v1/accounts/{id}/select。",
+        "operationId": "updateSettings",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsPatch"
+              },
+              "example": {
+                "http_proxy": "socks5://127.0.0.1:1080"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "更新后的全量配置",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SettingsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入配置写入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "bearerAuth": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "启动时通过 --auth-token 配置；默认回环监听时不需要。"
+      }
+    },
+    "schemas": {
+      "Health": {
+        "type": "object",
+        "required": [
+          "status",
+          "version",
+          "uptime_seconds"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "version": {
+            "type": "string",
+            "example": "0.1.0"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "example": 42
+          }
+        }
+      },
+      "SelectAccountResponse": {
+        "type": "object",
+        "required": [
+          "ok",
+          "current_account_id"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "example": true
+          },
+          "current_account_id": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "AccountDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/Account"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "updated_at": {
+                "type": "integer",
+                "format": "int64",
+                "description": "最近更新时间，Unix 秒；从未更新时省略。"
+              },
+              "session_present": {
+                "type": "boolean",
+                "description": "session 文件是否存在；false 时该账号无法用于下载。"
+              }
+            }
+          }
+        ]
+      },
+      "SettingsResponse": {
+        "type": "object",
+        "required": [
+          "settings"
+        ],
+        "properties": {
+          "settings": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Setting"
+            }
+          }
+        }
+      },
+      "Setting": {
+        "type": "object",
+        "required": [
+          "key",
+          "value",
+          "known"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "example": "http_proxy"
+          },
+          "value": {
+            "type": "string",
+            "example": "socks5://127.0.0.1:1080"
+          },
+          "description": {
+            "type": "string"
+          },
+          "known": {
+            "type": "boolean",
+            "description": "是否为程序认识的配置项；false 时只能展示，不能写入。"
+          },
+          "read_only": {
+            "type": "boolean",
+            "description": "只能由专门接口维护（如 current_account_id）。"
+          }
+        }
+      },
+      "SettingsPatch": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string",
+          "nullable": true
+        },
+        "description": "键为配置项名；值为字符串表示写入，null 表示删除，未出现的键保持不变。"
+      },
+      "AccountsResponse": {
+        "type": "object",
+        "required": [
+          "accounts"
+        ],
+        "properties": {
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Account"
+            }
+          },
+          "current_account_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "当前选中的账号 ID；没有选中时省略。"
+          }
+        }
+      },
+      "Account": {
+        "type": "object",
+        "required": [
+          "id",
+          "kind",
+          "name",
+          "state",
+          "created_at",
+          "current"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "mtproto",
+              "botapi"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string",
+            "description": "Telegram 返回的手机号，不带 + 号；展示时请打码。"
+          },
+          "state": {
+            "type": "string",
+            "enum": [
+              "unauthed",
+              "authed",
+              "error"
+            ]
+          },
+          "last_error": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "登记时间，Unix 秒。"
+          },
+          "current": {
+            "type": "boolean",
+            "description": "是否为当前选中账号。"
+          }
+        }
+      },
+      "ProbeRequest": {
+        "type": "object",
+        "properties": {
+          "tdata": {
+            "type": "string",
+            "description": "Telegram Desktop 的 tdata 目录；留空自动查找常见安装位置。",
+            "example": "C:\\Users\\me\\AppData\\Roaming\\Telegram Desktop\\tdata"
+          },
+          "tdata_passcode": {
+            "type": "string",
+            "description": "Telegram Desktop 的本地密码；没有设置过就留空。",
+            "format": "password"
+          },
+          "timeout_seconds": {
+            "type": "integer",
+            "description": "连接 Telegram 的超时，默认 30，允许 5-300。",
+            "minimum": 5,
+            "maximum": 300,
+            "example": 30
+          },
+          "import": {
+            "type": "boolean",
+            "description": "是否把探测到的账号写入 sessions/ 与数据库，默认 true；false 时只探测。",
+            "default": true
+          }
+        }
+      },
+      "ProbeResponse": {
+        "type": "object",
+        "required": [
+          "accounts",
+          "imported",
+          "skipped"
+        ],
+        "properties": {
+          "tdata_path": {
+            "type": "string",
+            "description": "实际使用的 tdata 目录。"
+          },
+          "accounts": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProbeAccount"
+            }
+          },
+          "imported": {
+            "type": "integer",
+            "description": "新写入 session 文件的账号数。"
+          },
+          "skipped": {
+            "type": "integer",
+            "description": "session 文件已存在、被保留的账号数。"
+          },
+          "selected_account_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "导入后库里只剩一个账号、被自动选中时返回其 ID。"
+          }
+        }
+      },
+      "ProbeAccount": {
+        "type": "object",
+        "required": [
+          "index",
+          "user_id"
+        ],
+        "properties": {
+          "index": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Telegram Desktop 内部的账号序号。"
+          },
+          "user_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "name": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          },
+          "phone": {
+            "type": "string"
+          },
+          "devices": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProbeDevice"
+            }
+          },
+          "error": {
+            "type": "string",
+            "description": "该账号探测失败的原因；为空表示成功。"
+          }
+        }
+      },
+      "ProbeDevice": {
+        "type": "object",
+        "properties": {
+          "current": {
+            "type": "boolean",
+            "description": "是否为当前正在使用的会话。"
+          },
+          "app_name": {
+            "type": "string"
+          },
+          "app_version": {
+            "type": "string"
+          },
+          "platform": {
+            "type": "string"
+          },
+          "device_model": {
+            "type": "string"
+          },
+          "system_version": {
+            "type": "string"
+          },
+          "country": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "登录时间，Unix 秒。"
+          },
+          "active_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "最近活跃时间，Unix 秒。"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/APIError"
+          }
+        }
+      },
+      "APIError": {
+        "type": "object",
+        "required": [
+          "code",
+          "message"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "not_found"
+          },
+          "message": {
+            "type": "string",
+            "example": "接口不存在: /api/v1/nope"
+          }
+        }
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "token 缺失或错误",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "BadRequest": {
+        "description": "参数不合法，或探测因输入问题失败（tdata 不存在、本地密码错误等）",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "接口或资源不存在",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      },
+      "GatewayTimeout": {
+        "description": "连接 Telegram 超时",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    }
+  }
+}
