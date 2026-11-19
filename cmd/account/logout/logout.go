@@ -1,4 +1,4 @@
-package cmd
+package logout
 
 import (
 	"bufio"
@@ -10,9 +10,8 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
-	"gorm.io/gorm"
 
-	"github.com/ma6254/tg_down/internal/config"
+	accountsvc "github.com/ma6254/tg_down/internal/account"
 	"github.com/ma6254/tg_down/internal/database"
 )
 
@@ -107,7 +106,8 @@ func runAccountLogout(_ *cobra.Command, args []string) error {
 	}
 	defer db.Close()
 
-	targets, err := findLogoutTargets(db)
+	svc := accountsvc.New(db)
+	targets, err := svc.SelectForLogout(logoutOpts.TargetID, logoutOpts.TargetName, logoutOpts.All)
 	if err != nil {
 		return err
 	}
@@ -127,53 +127,21 @@ func runAccountLogout(_ *cobra.Command, args []string) error {
 
 	removedFiles := 0
 	for _, account := range targets {
-		if err := db.DeleteAccount(account.ID); err != nil {
+		removed, err := svc.Delete(account)
+		if err != nil {
 			return fmt.Errorf("删除账号 %d: %w", account.ID, err)
 		}
-		if removeSessionFile(account.SessionPath) {
+		if removed {
 			removedFiles++
 		}
 	}
 
-	clearCurrentIfDeleted(db, targets)
 	fmt.Printf("\n已删除 %d 个账号", len(targets))
 	if removedFiles > 0 {
 		fmt.Printf("，清理 %d 个 session 文件", removedFiles)
 	}
 	fmt.Println()
 	return nil
-}
-
-// findLogoutTargets 根据参数解析要删除的账号。
-func findLogoutTargets(db *database.DB) ([]database.Account, error) {
-	if logoutOpts.All {
-		return db.ListAccounts()
-	}
-	if logoutOpts.TargetID > 0 {
-		account, err := db.GetAccount(logoutOpts.TargetID)
-		if err != nil {
-			if errors.Is(err, gorm.ErrRecordNotFound) {
-				return nil, fmt.Errorf("账号 ID %d 不存在", logoutOpts.TargetID)
-			}
-			return nil, err
-		}
-		return []database.Account{*account}, nil
-	}
-
-	accounts, err := db.ListAccounts()
-	if err != nil {
-		return nil, err
-	}
-	key := strings.TrimSpace(logoutOpts.TargetName)
-	for _, account := range accounts {
-		if account.Name == key || account.Username == key || account.Phone == key {
-			return []database.Account{account}, nil
-		}
-		if account.Phone != "" && digitsOnly(account.Phone) == digitsOnly(key) {
-			return []database.Account{account}, nil
-		}
-	}
-	return nil, fmt.Errorf("没有找到匹配 %q 的账号", key)
 }
 
 // printLogoutTargets 打印待删除账号。
@@ -199,30 +167,4 @@ func confirmStdin() bool {
 		return true
 	}
 	return false
-}
-
-// removeSessionFile 删除 session 文件，返回是否真的删除了文件。
-func removeSessionFile(path string) bool {
-	if strings.TrimSpace(path) == "" {
-		return false
-	}
-	if _, err := os.Stat(path); err != nil {
-		return false
-	}
-	return os.Remove(path) == nil
-}
-
-// clearCurrentIfDeleted 如果当前账号被删除，清空 settings.current_account_id。
-func clearCurrentIfDeleted(db *database.DB, deleted []database.Account) {
-	store := config.NewStore(db)
-	currentID, ok, err := store.CurrentAccountID()
-	if err != nil || !ok {
-		return
-	}
-	for _, account := range deleted {
-		if account.ID == currentID {
-			_ = store.ClearCurrentAccountID()
-			return
-		}
-	}
 }

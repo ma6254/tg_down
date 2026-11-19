@@ -1,4 +1,4 @@
-package cmd
+package accountinfo
 
 import (
 	"context"
@@ -225,12 +225,4 @@ func printAccountInfo(w io.Writer, account *database.Account, current bool, live
 	if account.LastError != "" {
 		fmt.Fprintf(w, "  %-8s  %s\n", "最近错误", account.LastError)
 	}
-}
-
-// orDash 把空字符串替换为占位符。
-func orDash(value string) string {
-	if value == "" {
-		return "-"
-	}
-	return value
 }

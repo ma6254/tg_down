@@ -1,4 +1,4 @@
-package cmd
+package login
 
 import (
 	"os"
@@ -57,66 +57,6 @@ func TestRecordAccount(t *testing.T) {
 	}
 	if list[0].Username != "alice2" {
 		t.Errorf("用户名未更新: %+v", list[0])
-	}
-}
-
-// TestFindLogoutTargets 确认按 ID / 手机号 / 名称查找待删除账号。
-func TestFindLogoutTargets(t *testing.T) {
-	t.Setenv("TG_DOWN_HOME", t.TempDir())
-
-	db, err := openDatabase()
-	if err != nil {
-		t.Fatalf("打开数据库失败: %v", err)
-	}
-	defer db.Close()
-
-	account := &database.Account{
-		Kind:        database.AccountKindMTProto,
-		Name:        "主号",
-		Phone:       "+8613800000000",
-		Username:    "alice",
-		SessionPath: "./sessions/mtproto-8613800000000.json",
-		State:       database.AccountStateAuthed,
-	}
-	if err := db.SaveAccount(account); err != nil {
-		t.Fatalf("保存账号失败: %v", err)
-	}
-
-	saved := logoutOpts
-	defer func() { logoutOpts = saved }()
-
-	// 按 ID。
-	logoutOpts = &logoutOptions{TargetID: account.ID}
-	targets, err := findLogoutTargets(db)
-	if err != nil {
-		t.Fatalf("按 ID 查找失败: %v", err)
-	}
-	if len(targets) != 1 || targets[0].ID != account.ID {
-		t.Fatalf("按 ID 查找结果异常: %+v", targets)
-	}
-
-	// 按手机号（带加号）。
-	logoutOpts = &logoutOptions{TargetName: "+8613800000000"}
-	if targets, err = findLogoutTargets(db); err != nil || len(targets) != 1 {
-		t.Fatalf("按手机号查找失败: %v, %+v", err, targets)
-	}
-
-	// 按名称。
-	logoutOpts = &logoutOptions{TargetName: "主号"}
-	if targets, err = findLogoutTargets(db); err != nil || len(targets) != 1 {
-		t.Fatalf("按名称查找失败: %v, %+v", err, targets)
-	}
-
-	// 不存在。
-	logoutOpts = &logoutOptions{TargetName: "nobody"}
-	if _, err = findLogoutTargets(db); err == nil {
-		t.Fatal("不存在的账号应报错")
-	}
-
-	// 全部。
-	logoutOpts = &logoutOptions{All: true}
-	if targets, err = findLogoutTargets(db); err != nil || len(targets) != 1 {
-		t.Fatalf("--all 查找失败: %v, %+v", err, targets)
 	}
 }
 

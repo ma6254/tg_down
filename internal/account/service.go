@@ -1,0 +1,220 @@
+// Package account 实现账号的持久化与导入逻辑，不依赖命令行。
+package account
+
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+
+	"gorm.io/gorm"
+
+	"github.com/ma6254/tg_down/internal/config"
+	"github.com/ma6254/tg_down/internal/database"
+	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
+	"github.com/ma6254/tg_down/internal/utils"
+)
+
+// Service 是账号相关的业务逻辑，由命令层用数据库句柄构造。
+type Service struct {
+	db *database.DB
+}
+
+// New 创建账号服务。
+func New(db *database.DB) *Service {
+	return &Service{db: db}
+}
+
+// RecordInput 是登记账号所需的字段。
+type RecordInput struct {
+	Kind        string
+	Name        string
+	Phone       string
+	Username    string
+	SessionPath string
+}
+
+// Record 按 session 路径去重地写入账号记录。
+func (s *Service) Record(in RecordInput) (*database.Account, error) {
+	row, err := s.db.FindAccountBySessionPath(in.SessionPath)
+	switch {
+	case err == nil:
+		// 已存在：更新可变字段。
+	case errors.Is(err, gorm.ErrRecordNotFound):
+		row = &database.Account{
+			Kind:        in.Kind,
+			SessionPath: in.SessionPath,
+		}
+	default:
+		return nil, err
+	}
+
+	row.Kind = in.Kind
+	row.Name = in.Name
+	row.Phone = in.Phone
+	row.Username = in.Username
+	row.State = database.AccountStateAuthed
+	row.LastError = ""
+
+	if err := s.db.SaveAccount(row); err != nil {
+		return nil, err
+	}
+	return row, nil
+}
+
+// AutoSelectSingle 在库里只有一个账号时把它设为当前账号。
+func (s *Service) AutoSelectSingle() (bool, error) {
+	count, err := s.db.CountAccounts()
+	if err != nil {
+		return false, err
+	}
+	if count != 1 {
+		return false, nil
+	}
+
+	accounts, err := s.db.ListAccounts()
+	if err != nil {
+		return false, err
+	}
+	if len(accounts) != 1 {
+		return false, nil
+	}
+
+	store := config.NewStore(s.db)
+	current, ok, err := store.CurrentAccountID()
+	if err != nil {
+		return false, err
+	}
+	if ok && current == accounts[0].ID {
+		return false, nil
+	}
+	if err := store.SetCurrentAccountID(accounts[0].ID); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+// ImportResult 是一次桌面导入的结果。
+type ImportResult struct {
+	Imported int // 新写入 session 文件的账号数
+	Skipped  int // session 文件已存在、被保留的账号数
+}
+
+// ImportDesktop 把探测到的桌面账号写入 session 文件与数据库。
+func (s *Service) ImportDesktop(sessionDir string, result *mtproto.DesktopProbeResult) (ImportResult, error) {
+	var out ImportResult
+	for _, item := range result.Accounts {
+		if item.Err != nil || item.Account == nil {
+			continue
+		}
+
+		phone := strings.TrimSpace(item.Account.Phone)
+		if phone == "" {
+			continue
+		}
+		sessionPath := filepath.Join(sessionDir, "mtproto-"+utils.DigitsOnly(phone)+".json")
+
+		if _, statErr := os.Stat(sessionPath); statErr == nil {
+			out.Skipped++
+		} else {
+			if err := mtproto.SaveSessionFile(sessionPath, item.Session); err != nil {
+				return out, fmt.Errorf("保存 session %s: %w", sessionPath, err)
+			}
+			out.Imported++
+		}
+
+		name := item.Account.DisplayName()
+		if _, err := s.Record(RecordInput{
+			Kind:        database.AccountKindMTProto,
+			Name:        name,
+			Phone:       phone,
+			Username:    item.Account.Username,
+			SessionPath: sessionPath,
+		}); err != nil {
+			return out, fmt.Errorf("写入账号数据库: %w", err)
+		}
+	}
+	return out, nil
+}
+
+// List 返回全部账号。
+func (s *Service) List() ([]database.Account, error) {
+	return s.db.ListAccounts()
+}
+
+// Get 按 ID 查询账号。
+func (s *Service) Get(id int64) (*database.Account, error) {
+	return s.db.GetAccount(id)
+}
+
+// CurrentAccountID 返回当前选中的账号 ID。
+func (s *Service) CurrentAccountID() (int64, bool, error) {
+	return config.NewStore(s.db).CurrentAccountID()
+}
+
+// SetCurrentAccountID 设置当前选中的账号 ID。
+func (s *Service) SetCurrentAccountID(id int64) error {
+	return config.NewStore(s.db).SetCurrentAccountID(id)
+}
+
+// FindByPhoneOrName 按手机号、名称或用户名查找账号。
+func (s *Service) FindByPhoneOrName(key string) (*database.Account, error) {
+	accounts, err := s.db.ListAccounts()
+	if err != nil {
+		return nil, err
+	}
+	key = strings.TrimSpace(key)
+	for i := range accounts {
+		account := accounts[i]
+		if account.Name == key || account.Username == key || account.Phone == key {
+			return &account, nil
+		}
+		if account.Phone != "" && utils.DigitsOnly(account.Phone) == utils.DigitsOnly(key) {
+			return &account, nil
+		}
+	}
+	return nil, fmt.Errorf("没有找到匹配 %q 的账号", key)
+}
+
+// SelectForLogout 解析要删除的账号：全部、按 ID 或按名称/手机号。
+func (s *Service) SelectForLogout(id int64, name string, all bool) ([]database.Account, error) {
+	if all {
+		return s.db.ListAccounts()
+	}
+	if id > 0 {
+		account, err := s.db.GetAccount(id)
+		if err != nil {
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				return nil, fmt.Errorf("账号 ID %d 不存在", id)
+			}
+			return nil, err
+		}
+		return []database.Account{*account}, nil
+	}
+
+	account, err := s.FindByPhoneOrName(name)
+	if err != nil {
+		return nil, err
+	}
+	return []database.Account{*account}, nil
+}
+
+// Delete 删除账号记录与 session 文件；若删除的是当前账号会清空选择。
+func (s *Service) Delete(account database.Account) (removedFile bool, err error) {
+	if err := s.db.DeleteAccount(account.ID); err != nil {
+		return false, err
+	}
+
+	if strings.TrimSpace(account.SessionPath) != "" {
+		if _, statErr := os.Stat(account.SessionPath); statErr == nil {
+			removedFile = os.Remove(account.SessionPath) == nil
+		}
+	}
+
+	store := config.NewStore(s.db)
+	if current, ok, curErr := store.CurrentAccountID(); curErr == nil && ok && current == account.ID {
+		_ = store.ClearCurrentAccountID()
+	}
+	return removedFile, nil
+}

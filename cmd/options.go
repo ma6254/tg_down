@@ -7,13 +7,9 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/spf13/pflag"
 )
-
-// defaultNetworkTimeout 是涉及网络的只读操作（探测等）的默认超时。
-const defaultNetworkTimeout = 30 * time.Second
 
 // Options 是服务启动参数。
 //

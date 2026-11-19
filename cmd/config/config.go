@@ -1,4 +1,4 @@
-package cmd
+package configcmd
 
 import (
 	"fmt"
@@ -8,7 +8,11 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/ma6254/tg_down/internal/config"
+	"github.com/ma6254/tg_down/internal/utils"
 )
+
+// openDatabase 打开运行数据目录下的 SQLite。
+var openDatabase = utils.OpenDatabase
 
 // configCmd 查看与修改系统配置。
 var configCmd = &cobra.Command{
@@ -116,22 +120,11 @@ func init() {
 	configCmd.AddCommand(configListCmd, configGetCmd, configSetCmd, configUnsetCmd, configExportCmd, configImportCmd)
 }
 
-// resolveProxy 从配置读取 http_proxy，未配置时返回空串（直连）。
-func resolveProxy() (string, error) {
-	db, err := openDatabase()
-	if err != nil {
-		return "", err
-	}
-	defer db.Close()
+// resolveProxy 已移到 internal/utils，命令层不再各自实现。
 
-	value, ok, err := config.NewStore(db).Get(config.KeyHTTPProxy)
-	if err != nil {
-		return "", fmt.Errorf("读取 %s: %w", config.KeyHTTPProxy, err)
-	}
-	if !ok {
-		return "", nil
-	}
-	return value, nil
+// NewCommand 返回 config 子命令组，由根命令挂载。
+func NewCommand() *cobra.Command {
+	return configCmd
 }
 
 func runConfigList(_ *cobra.Command, _ []string) error {

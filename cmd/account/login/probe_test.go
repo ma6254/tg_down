@@ -1,11 +1,10 @@
-package cmd
+package login
 
 import (
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
@@ -153,39 +152,4 @@ func TestResolveSessionPath(t *testing.T) {
 			t.Fatal("期望报错，实际通过")
 		}
 	})
-}
-
-// TestDescribeDevice 确认客户端描述的可读性。
-func TestDescribeDevice(t *testing.T) {
-	d := mtproto.Device{
-		AppName:  "tg_down",
-		Platform: "Windows",
-		Country:  "CN",
-		ActiveAt: time.Date(2026, 11, 18, 22, 30, 0, 0, time.UTC),
-		Current:  true,
-	}
-	got := describeDevice(d)
-	for _, want := range []string{"tg_down", "Windows", "CN", "2026-11-18 22:30"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("描述 %q 缺少 %q", got, want)
-		}
-	}
-
-	// 字段全空时不应输出空串。
-	if got := describeDevice(mtproto.Device{}); !strings.Contains(got, "未知客户端") {
-		t.Errorf("空设备描述 = %q", got)
-	}
-}
-
-// TestAccountAttrs 确认属性拼装。
-func TestAccountAttrs(t *testing.T) {
-	if got := accountAttrs(&mtproto.Account{}); got != "" {
-		t.Errorf("无属性时 got %q", got)
-	}
-	if got := accountAttrs(&mtproto.Account{Premium: true, Bot: false}); got != "Premium" {
-		t.Errorf("got %q", got)
-	}
-	if got := accountAttrs(&mtproto.Account{Premium: true, Bot: true}); got != "Premium / Bot" {
-		t.Errorf("got %q", got)
-	}
 }

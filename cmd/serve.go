@@ -41,17 +41,12 @@ func runServe(_ *cobra.Command, _ []string) error {
 
 // printStartupInfo 打印生效配置，便于确认命令行参数是否按预期覆盖。
 func printStartupInfo() {
-	cfgSource := "内置默认值"
-	if cfgPath != "" {
-		cfgSource = cfgPath + "（配置文件尚未接入，暂不读取）"
-	}
-
 	fmt.Printf(`
   ┌──────────────────────────────────────────────┐
   │   tg_down · Telegram 下载工具                 │
   └──────────────────────────────────────────────┘
   版本      %s（commit %s，built %s）
-  配置      %s
+  配置      数据库 settings（tg_down config）
   监听      http://%s
   下载目录  %s
   并发      %d
@@ -59,7 +54,6 @@ func printStartupInfo() {
   日志级别  %s
 `,
 		build.Version, build.Commit, build.BuildTime,
-		cfgSource,
 		opts.Listen,
 		opts.DownloadDir,
 		opts.MaxConcurrency,

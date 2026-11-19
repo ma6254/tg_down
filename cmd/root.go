@@ -8,12 +8,13 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/ma6254/tg_down/cmd/account"
+	configcmd "github.com/ma6254/tg_down/cmd/config"
 	"github.com/ma6254/tg_down/internal/build"
 )
 
 var (
 	opts    = newOptions() // 服务参数，root 与 serve 共用
-	cfgPath string         // 配置文件路径
 	workDir string         // 启动前切换的工作目录
 )
 
@@ -44,11 +45,10 @@ func Execute() {
 }
 
 func init() {
-	rootCmd.PersistentFlags().StringVarP(&cfgPath, "config", "c", "", "配置文件路径（默认 ./config.json，不存在则用内置默认值）")
 	rootCmd.PersistentFlags().StringVar(&workDir, "workdir", "", "启动前切换的工作目录，数据与下载路径都相对于它解析")
 	opts.bind(rootCmd.PersistentFlags())
 
-	rootCmd.AddCommand(serveCmd, accountCmd, configCmd, versionCmd)
+	rootCmd.AddCommand(serveCmd, account.NewCommand(), configcmd.NewCommand(), versionCmd)
 
 	// 让帮助里的命令列表显示别称（如 list 的 ls）。
 	applyUsageTemplate(rootCmd)
