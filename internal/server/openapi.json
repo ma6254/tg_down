@@ -21,6 +21,10 @@
       "description": "账号登录与导入"
     },
     {
+      "name": "links",
+      "description": "消息链接解析"
+    },
+    {
       "name": "settings",
       "description": "系统配置"
     }
@@ -356,6 +360,240 @@
                 }
               }
             }
+          }
+        }
+      }
+    },
+    "/api/v1/links/preview": {
+      "post": {
+        "tags": [
+          "links"
+        ],
+        "summary": "解析 Telegram 消息链接",
+        "description": "解析链接指向的消息，返回正文、正文里的文字链接与媒体元数据；等价于 CLI 的 download -u <链接>，expand_text_links 对应 --expand-text-links。只读，不创建下载任务。",
+        "operationId": "previewLinks",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "links"
+                ],
+                "properties": {
+                  "links": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Telegram 消息链接，一行一条由调用方拆分"
+                  },
+                  "expand_text_links": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "展开正文里的文字链接，只展开一层"
+                  }
+                }
+              },
+              "example": {
+                "links": [
+                  "https://t.me/JPD233/2522"
+                ],
+                "expand_text_links": true
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "解析结果；单条失败写在 items[].error，整体仍返回 200",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "items": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "link": {
+                            "type": "string"
+                          },
+                          "expanded": {
+                            "type": "boolean"
+                          },
+                          "message_id": {
+                            "type": "integer"
+                          },
+                          "chat": {
+                            "type": "object"
+                          },
+                          "text": {
+                            "type": "string"
+                          },
+                          "links": {
+                            "type": "array",
+                            "items": {
+                              "type": "object"
+                            }
+                          },
+                          "media": {
+                            "type": "object",
+                            "nullable": true
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    },
+                    "summary": {
+                      "type": "object",
+                      "properties": {
+                        "total": {
+                          "type": "integer"
+                        },
+                        "ok": {
+                          "type": "integer"
+                        },
+                        "failed": {
+                          "type": "integer"
+                        },
+                        "expanded": {
+                          "type": "integer"
+                        },
+                        "no_media": {
+                          "type": "integer"
+                        },
+                        "skipped_links": {
+                          "type": "integer"
+                        },
+                        "truncated": {
+                          "type": "boolean"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "没有当前账号，或账号的 session 不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入链接解析",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "连接 Telegram 失败或 Telegram 报错",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/media/thumbnail/{token}": {
+      "get": {
+        "tags": [
+          "links"
+        ],
+        "summary": "获取媒体缩略图",
+        "description": "按解析结果里 media.thumbnail_url 的 token 下载缩略图（JPEG）。token 有效期 30 分钟；没有缩略图的媒体（如音频、PDF）不会返回该字段。",
+        "operationId": "getMediaThumbnail",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "token",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "缩略图字节",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入缩略图",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "缩略图下载失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
           }
         }
       }

@@ -40,6 +40,12 @@ func friendlyError(err error) error {
 		return errors.New("api_id / api_hash 无效，请到 https://my.telegram.org 核对")
 	case "AUTH_KEY_UNREGISTERED":
 		return errors.New("登录状态已失效，请删除 session 文件后重新登录")
+	case "CHANNEL_PRIVATE", "CHANNEL_INVALID":
+		return errors.New("无法访问该频道：请确认已用当前账号加入，且频道没有限制成员查看")
+	case "USERNAME_NOT_OCCUPIED", "USERNAME_INVALID":
+		return errors.New("用户名不存在或已失效")
+	case "MSG_ID_INVALID":
+		return errors.New("消息 ID 无效")
 	}
 
 	return fmt.Errorf("%s（code %d）", rpc.Type, rpc.Code)

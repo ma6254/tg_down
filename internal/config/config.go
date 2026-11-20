@@ -5,6 +5,7 @@
 package config
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net/url"
@@ -24,6 +25,13 @@ const (
 	KeyHTTPProxyEnabled = "http_proxy_enabled"
 	// KeyCurrentAccountID 是当前选中的账号 ID，由 account switch 维护。
 	KeyCurrentAccountID = "current_account_id"
+	// KeyAPIID 是自定义 Telegram 应用的 api_id（my.telegram.org 申请）。
+	KeyAPIID = "api_id"
+	// KeyAPIHash 是自定义 Telegram 应用的 api_hash，与 api_id 配套。
+	KeyAPIHash = "api_hash"
+	// KeyAPICustomEnabled 控制是否启用自定义 api_id / api_hash；
+	// 关闭时即使配置了凭据也使用内置 desktop。
+	KeyAPICustomEnabled = "api_custom_enabled"
 
 	// MaskedPassword 是配置值里密码被脱敏后的占位符。
 	// API 读取代理时返回 ***；写回时若密码仍是它，服务端沿用已保存的密码。
@@ -63,6 +71,27 @@ var items = []Item{
 		Type:        TypeBoolean,
 		Default:     "false",
 		Description: "是否启用 http_proxy；false 时即使配置了代理也直连",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyAPIID,
+		Type:        TypeInteger,
+		Default:     "",
+		Description: "自定义 Telegram api_id（my.telegram.org 申请），与 api_hash 需同时配置；留空使用内置 desktop 凭据",
+		Validate:    ValidateAPIID,
+	},
+	{
+		Key:         KeyAPIHash,
+		Type:        TypeString,
+		Default:     "",
+		Description: "自定义 Telegram api_hash，与 api_id 配套；属于敏感信息，请勿泄露",
+		Validate:    ValidateAPIHash,
+	},
+	{
+		Key:         KeyAPICustomEnabled,
+		Type:        TypeBoolean,
+		Default:     "false",
+		Description: "是否使用 api_id / api_hash；关闭时即使配置了凭据也使用内置 desktop",
 		Validate:    ValidateBool,
 	},
 	{
@@ -370,6 +399,34 @@ func ValidateAccountID(raw string) error {
 	id, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || id <= 0 {
 		return fmt.Errorf("账号 ID 必须是正整数，当前为 %q", raw)
+	}
+	return nil
+}
+
+// ValidateAPIID 校验 api_id：必须是正整数，且放得进 int32。
+func ValidateAPIID(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("api_id 不能为空；如需清除请使用 config unset api_id")
+	}
+	id, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil || id <= 0 {
+		return fmt.Errorf("api_id 必须是正整数，当前为 %q", raw)
+	}
+	return nil
+}
+
+// ValidateAPIHash 校验 api_hash：32 位十六进制字符串。
+func ValidateAPIHash(raw string) error {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return errors.New("api_hash 不能为空；如需清除请使用 config unset api_hash")
+	}
+	if len(raw) != 32 {
+		return fmt.Errorf("api_hash 应为 32 位十六进制字符串（当前长度 %d）", len(raw))
+	}
+	if _, err := hex.DecodeString(raw); err != nil {
+		return errors.New("api_hash 只能包含 0-9 与 a-f")
 	}
 	return nil
 }

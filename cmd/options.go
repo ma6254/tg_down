@@ -29,19 +29,26 @@ func newOptions() *Options {
 	return &Options{
 		Listen:         "127.0.0.1:22429",
 		DownloadDir:    "./downloads",
-		MaxConcurrency: 3,
+		MaxConcurrency: 1,
 		LogLevel:       "info",
 	}
 }
 
-// bind 把参数注册到命令行。
+// bind 注册全局参数：根命令与所有子命令共用。
+//
+// --listen 不在这里：它只影响 HTTP 监听，属于 serve（见 bindServe）。
+// 放进全局参数会让 download 之类的子命令平白多出一个无意义的旗标。
 func (o *Options) bind(fs *pflag.FlagSet) {
-	fs.StringVar(&o.Listen, "listen", o.Listen, "HTTP 监听地址，例如 127.0.0.1:22429")
 	fs.StringVar(&o.DownloadDir, "download-dir", o.DownloadDir, "下载根目录")
 	fs.IntVar(&o.MaxConcurrency, "max-concurrency", o.MaxConcurrency, "并发下载数，范围 1-8")
 	fs.StringVar(&o.AuthToken, "auth-token", o.AuthToken, "API 鉴权 token；监听非回环地址时必填")
 	fs.StringVar(&o.BotAPIBaseURL, "botapi-base-url", o.BotAPIBaseURL, "自建 Bot API 服务地址，留空使用官方地址")
 	fs.StringVar(&o.LogLevel, "log-level", o.LogLevel, "日志级别：debug / info / warn / error")
+}
+
+// bindServe 注册 serve 专用参数。
+func (o *Options) bindServe(fs *pflag.FlagSet) {
+	fs.StringVar(&o.Listen, "listen", o.Listen, "HTTP 监听地址，例如 127.0.0.1:22429")
 }
 
 // validate 校验参数并归一化取值。

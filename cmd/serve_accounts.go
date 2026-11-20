@@ -172,7 +172,7 @@ func getAccountLive(ctx context.Context, id int64) (server.AccountLiveInfo, erro
 	if err != nil {
 		return server.AccountLiveInfo{}, fmt.Errorf("读取代理配置: %w", err)
 	}
-	app, err := mtproto.PresetApp(mtproto.AppDesktop)
+	app, err := accountsvc.New(db).AppOrDefault()
 	if err != nil {
 		return server.AccountLiveInfo{}, err
 	}

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"gorm.io/gorm"
@@ -151,6 +152,60 @@ func (s *Service) Get(id int64) (*database.Account, error) {
 // CurrentAccountID 返回当前选中的账号 ID。
 func (s *Service) CurrentAccountID() (int64, bool, error) {
 	return config.NewStore(s.db).CurrentAccountID()
+}
+
+// App 读取 settings 里的自定义 Telegram 应用凭据。
+//
+// 只有 api_custom_enabled=true 时才使用自定义凭据；关闭或未配置时
+// custom 为 false，调用方应回退内置 desktop。启用后如果两项凭据缺失或
+// 只配置了一项，返回错误而不是用半个凭据去连接 Telegram。
+func (s *Service) App() (app mtproto.App, custom bool, err error) {
+	store := config.NewStore(s.db)
+
+	enabled, err := store.Bool(config.KeyAPICustomEnabled)
+	if err != nil {
+		return mtproto.App{}, false, fmt.Errorf("读取 api_custom_enabled: %w", err)
+	}
+	if !enabled {
+		return mtproto.App{}, false, nil
+	}
+
+	idValue, hasID, err := store.Get(config.KeyAPIID)
+	if err != nil {
+		return mtproto.App{}, false, fmt.Errorf("读取 api_id: %w", err)
+	}
+	hashValue, hasHash, err := store.Get(config.KeyAPIHash)
+	if err != nil {
+		return mtproto.App{}, false, fmt.Errorf("读取 api_hash: %w", err)
+	}
+
+	idValue = strings.TrimSpace(idValue)
+	hashValue = strings.TrimSpace(hashValue)
+	if !hasID && !hasHash {
+		return mtproto.App{}, false, errors.New("已启用自定义 api 凭据（api_custom_enabled=true），但 api_id / api_hash 未配置")
+	}
+	if idValue == "" || hashValue == "" {
+		return mtproto.App{}, false, errors.New("已启用自定义 api 凭据，api_id 与 api_hash 需要同时配置")
+	}
+
+	id, err := strconv.Atoi(idValue)
+	if err != nil || id <= 0 {
+		return mtproto.App{}, false, fmt.Errorf("settings 里的 api_id 无效：%q", idValue)
+	}
+	return mtproto.App{ID: id, Hash: hashValue}, true, nil
+}
+
+// AppOrDefault 返回最终使用的应用凭据：配置了自定义凭据就用自定义，
+// 否则回退内置 desktop（api_id 2040）。
+func (s *Service) AppOrDefault() (mtproto.App, error) {
+	app, custom, err := s.App()
+	if err != nil {
+		return mtproto.App{}, err
+	}
+	if custom {
+		return app, nil
+	}
+	return mtproto.PresetApp(mtproto.AppDesktop)
 }
 
 // SetCurrentAccountID 设置当前选中的账号 ID。

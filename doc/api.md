@@ -196,6 +196,63 @@ GET /api/v1/accounts/{id}/live
 → 504 查询超过 30 秒
 ```
 
+## 链接解析
+
+等价于 CLI 的 `tg_down download -u <链接>`：解析链接指向的消息，返回正文、
+正文里的文字链接与媒体元数据。只联网读取，不写数据库、不创建下载任务。
+
+```
+POST /api/v1/links/preview
+body: {
+  "links": ["https://t.me/JPD233/2522"],
+  "expand_text_links": false     // 可选；true 时展开正文里的文字链接，只展开一层
+}
+→ 200 {
+  "items": [{
+    "link": "https://t.me/JPD233/2522",
+    "message_id": 2522,
+    "chat": {"kind": "channel", "id": 3713824040, "title": "…", "username": "JPD233"},
+    "text": "…",
+    "links": [{"text": "第1集", "url": "https://t.me/JPD233/2522?comment=12454"}],
+    "media": {
+      "kind": "video",              // photo | video | audio | document
+      "file_name": "…mp4",
+      "size": 324564430,
+      "mime": "video/mp4",
+      "duration": 820,              // 秒，非音视频省略
+      "width": 1280, "height": 720,
+      "grouped_id": 0,              // 相册分组，非相册省略
+      "downloadable": true,         // 是否超过当前账号的单文件上限
+      "max_size": 2147483648,       // 普通 2 GB / Premium 4 GB
+      "thumbnail_url": "/api/v1/media/thumbnail/<token>"  // 列表封面，没有缩略图时省略
+    }
+  }],
+  "summary": {"total": 1, "ok": 1, "failed": 0, "expanded": 0, "no_media": 0}
+}
+```
+
+### 媒体缩略图
+
+```
+GET /api/v1/media/thumbnail/{token}
+→ 200 image/jpeg
+```
+
+`token` 来自解析结果的 `media.thumbnail_url`，有效期 30 分钟；服务端按需下载并缓存，
+前端用 `loading="lazy"` 只加载可见的封面。没有缩略图的媒体（如音频、PDF）不会返回该字段。
+token 失效返回 404，下载失败返回 502；前端应退回类型图标。
+
+说明：
+
+- 单条链接失败只写在该条的 `error` 字段，整体仍返回 200；`links` 为空或超过
+  200 条返回 400。
+- 纯文本消息没有 `media`，正文与链接照常返回。
+- `expand_text_links=true` 时，展开出的条目带 `expanded: true`，并计入
+  `summary.expanded`；展开上限 200 条（超过时 `summary.truncated=true`），
+  正文里不是消息链接的条数计入 `summary.skipped_links`。
+- 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；
+  502 `preview_failed`（连接或 Telegram 报错）；504 `preview_timeout`。
+
 ## 会话与消息
 
 ```

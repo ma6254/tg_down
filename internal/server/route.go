@@ -29,6 +29,12 @@ func (s *Server) routes() *http.ServeMux {
 	// 切换当前账号：等价于 account switch <id>。
 	mux.HandleFunc("POST /api/v1/accounts/{id}/select", s.handleAccountSelect)
 
+	// 链接解析：等价于 download -u <链接>，不落库、不开始下载。
+	mux.HandleFunc("POST /api/v1/links/preview", s.handlePreviewLinks)
+
+	// 媒体缩略图：按解析结果里的 token 下载小图，供列表展示封面。
+	mux.HandleFunc("GET /api/v1/media/thumbnail/{token}", s.handleMediaThumbnail)
+
 	// 系统配置：等价于 config list / config set / config unset。
 	mux.HandleFunc("GET /api/v1/settings", s.handleSettingsGet)
 	mux.HandleFunc("PUT /api/v1/settings", s.handleSettingsUpdate)

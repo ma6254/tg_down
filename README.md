@@ -52,17 +52,25 @@ go build -o tg_down.exe .         # 构建
 
 ## 命令行参数
 
-根命令与 `serve` 共用同一组参数（均为持久化 flag）：
+全局参数（所有子命令共用，持久化 flag）：
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
 | `--workdir` | 空 | 启动前切换工作目录，相对路径都基于它解析 |
-| `--listen` | `127.0.0.1:22429` | HTTP 监听地址 |
 | `--download-dir` | `./downloads` | 下载根目录 |
-| `--max-concurrency` | `3` | 并发下载数，范围 1–8 |
+| `--max-concurrency` | `1` | 并发下载数，范围 1–8 |
 | `--auth-token` | 空 | API 鉴权 token；监听非回环地址时**必填** |
 | `--botapi-base-url` | 空 | 自建 Bot API 服务地址，空则用官方 |
 | `--log-level` | `info` | `debug` / `info` / `warn` / `error` |
+
+`serve` 专用：
+
+| 参数 | 默认值 | 说明 |
+|---|---|---|
+| `--listen` | `127.0.0.1:22429` | HTTP 监听地址 |
+
+根命令不带子命令时等价于 `serve`，因此同样接受 `--listen`；该参数不出现在
+全局参数列表里，也不会出现在 `account`、`download` 等子命令的帮助中。
 
 安全约束：监听 `0.0.0.0`、`::`、空主机或非回环 IP 时必须提供 `--auth-token`，
 否则启动失败；`--max-concurrency` 限制在 1–8，避免触发 Telegram 限流。
@@ -73,6 +81,26 @@ go build -o tg_down.exe .         # 构建
 需要独立配额时用 `--app custom` 配合自己申请的 `api_id` / `api_hash`（到
 <https://my.telegram.org> 的 "API development tools" 创建，也可用
 `TG_DOWN_API_ID` / `TG_DOWN_API_HASH` 环境变量提供）。
+
+凭据也可以写进数据库配置，登录、在线资料与下载等所有命令都会自动使用：
+
+```bash
+tg_down config set api_id 123456
+tg_down config set api_hash abcdef0123456789abcdef0123456789
+tg_down config set api_custom_enabled true   # 启用自定义凭据（默认 false）
+tg_down config unset api_id                  # 清除后回退内置 desktop
+tg_down config unset api_hash
+tg_down config unset api_custom_enabled
+```
+
+`api_custom_enabled` 关闭时，即使配置了 `api_id` / `api_hash` 也使用内置 desktop；
+打开后两项必须同时配置。`api_id` 会校验为正整数，`api_hash` 校验为 32 位十六进制。
+命令行 `--api-id/--api-hash` 的优先级高于数据库配置。
+
+> 注意：`api_id` / `api_hash` 主要用于登录（`auth.sendCode`）和声明应用身份。
+> 已保存 session 的授权由 session 文件里的 auth key 承载，日常请求不会重新校验
+> `api_hash`；因此换一组凭据仍可能连上已有 session，但这**不代表凭据有效**。
+> 请把 session 文件与账号密码同等保管。
 
 ```bash
 # 零配置登录（内置 desktop 应用）
@@ -350,7 +378,7 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 |---|---|---|
 | `server.http_addr` | `127.0.0.1:22429` | 监听地址，默认仅本机 |
 | `download.dir` | `./downloads` | 下载根目录 |
-| `download.max_concurrency` | `3` | 并发下载数 |
+| `download.max_concurrency` | `1` | 并发下载数 |
 | `auth.token` | 空 | 对外暴露时必填 |
 | `botapi.base_url` | 官方地址 | 指向自建 local bot-api-server |
 

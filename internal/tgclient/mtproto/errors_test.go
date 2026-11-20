@@ -20,6 +20,8 @@ func TestFriendlyError(t *testing.T) {
 		{"手机号无效", tgerr.New(400, "PHONE_NUMBER_INVALID"), "手机号无效"},
 		{"api 凭据错误", tgerr.New(400, "API_ID_INVALID"), "api_id"},
 		{"限流", tgerr.New(420, "FLOOD_WAIT_30"), "限流"},
+		{"频道不可访问", tgerr.New(400, "CHANNEL_PRIVATE"), "无法访问该频道"},
+		{"用户名不存在", tgerr.New(400, "USERNAME_NOT_OCCUPIED"), "用户名不存在"},
 		{"未识别的错误保留类型", tgerr.New(400, "SOMETHING_ELSE"), "SOMETHING_ELSE"},
 	}
 

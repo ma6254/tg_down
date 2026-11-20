@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/pflag"
 
+	"github.com/ma6254/tg_down/cmd/account/internal/store"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
 
@@ -175,11 +176,26 @@ func (o *loginOptions) validateAPI() error {
 	return nil
 }
 
-// resolveApp 返回本次连接使用的应用凭据：显式 api 凭据优先，其次内置 desktop。
+// resolveApp 返回本次连接使用的应用凭据。
+//
+// 优先级：显式 --api-id/--api-hash > settings 里的 api_id/api_hash > 内置 desktop。
 func (o *loginOptions) resolveApp() (mtproto.App, error) {
 	if o.APIID > 0 && o.APIHash != "" {
 		return mtproto.App{ID: o.APIID, Hash: o.APIHash}, nil
 	}
+
+	// 数据库不可用时退回内置 desktop：登录本身仍可继续，只是不读自定义凭据。
+	if svc, closeFn, err := store.NewService(); err == nil {
+		app, custom, appErr := svc.App()
+		closeFn()
+		if appErr != nil {
+			return mtproto.App{}, appErr
+		}
+		if custom {
+			return app, nil
+		}
+	}
+
 	return mtproto.PresetApp(o.App)
 }
 

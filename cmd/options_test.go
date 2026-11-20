@@ -99,6 +99,7 @@ func TestOptionsBind(t *testing.T) {
 	o := newOptions()
 	fs := pflag.NewFlagSet("tg_down", pflag.ContinueOnError)
 	o.bind(fs)
+	o.bindServe(fs)
 
 	err := fs.Parse([]string{
 		"--listen", "0.0.0.0:39001",
@@ -132,6 +133,29 @@ func TestOptionsBind(t *testing.T) {
 	}
 	if err := o.validate(); err != nil {
 		t.Fatalf("校验失败: %v", err)
+	}
+}
+
+// TestOptionsListenScope 确认 --listen 只在 serve 上注册，不是全局参数。
+func TestOptionsListenScope(t *testing.T) {
+	o := newOptions()
+
+	global := pflag.NewFlagSet("global", pflag.ContinueOnError)
+	o.bind(global)
+	if global.Lookup("listen") != nil {
+		t.Error("--listen 不应注册为全局参数")
+	}
+
+	serve := pflag.NewFlagSet("serve", pflag.ContinueOnError)
+	o.bindServe(serve)
+	if serve.Lookup("listen") == nil {
+		t.Fatal("serve 缺少 --listen")
+	}
+	if err := serve.Parse([]string{"--listen", "127.0.0.1:39002"}); err != nil {
+		t.Fatalf("解析 --listen 失败: %v", err)
+	}
+	if o.Listen != "127.0.0.1:39002" {
+		t.Errorf("Listen = %q，期望 %q", o.Listen, "127.0.0.1:39002")
 	}
 }
 

@@ -91,7 +91,7 @@ func runAccountLogin(_ *cobra.Command, _ []string) error {
   手机号    %s
   应用      %s（api_id %d）
   session   %s
-`, lo.displayName(), maskPhone(lo.Phone), lo.appLabel(), app.ID, sessionPath)
+`, lo.displayName(), maskPhone(lo.Phone), appLabel(app), app.ID, sessionPath)
 
 	// 出站代理已在前面解析：配置表 http_proxy。
 	session := mtproto.Session{App: app, SessionPath: sessionPath, Proxy: proxy}
@@ -131,9 +131,10 @@ func runAccountLogin(_ *cobra.Command, _ []string) error {
 }
 
 // appLabel 返回当前应用的可读标识，便于确认是否用了自备凭据。
-func (o *loginOptions) appLabel() string {
-	if o.APIID > 0 && o.APIHash != "" {
-		return "custom"
+func appLabel(app mtproto.App) string {
+	desktop, err := mtproto.PresetApp(mtproto.AppDesktop)
+	if err == nil && app.ID == desktop.ID {
+		return mtproto.AppDesktop
 	}
-	return o.App
+	return mtproto.AppCustom
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/pflag"
 	"gorm.io/gorm"
 
+	accountsvc "github.com/ma6254/tg_down/internal/account"
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/database"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
@@ -83,7 +84,7 @@ func runAccountInfo(_ *cobra.Command, args []string) error {
 		ctx, cancel := context.WithTimeout(context.Background(), defaultNetworkTimeout)
 		defer cancel()
 
-		live, err = fetchLiveInfo(ctx, account)
+		live, err = fetchLiveInfo(ctx, db, account)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "在线资料：%v\n", err)
 			live = nil
@@ -98,12 +99,12 @@ func runAccountInfo(_ *cobra.Command, args []string) error {
 }
 
 // fetchLiveInfo 联网查询账号资料与已登录设备（不落库）。
-func fetchLiveInfo(ctx context.Context, account *database.Account) (*mtproto.LiveInfo, error) {
+func fetchLiveInfo(ctx context.Context, db *database.DB, account *database.Account) (*mtproto.LiveInfo, error) {
 	if account.SessionPath == "" {
 		return nil, errors.New("该账号没有 session 文件，无法联网查询")
 	}
 
-	app, err := mtproto.PresetApp(mtproto.AppDesktop)
+	app, err := accountsvc.New(db).AppOrDefault()
 	if err != nil {
 		return nil, err
 	}

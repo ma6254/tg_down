@@ -10,6 +10,7 @@ import (
 
 	"github.com/ma6254/tg_down/cmd/account"
 	configcmd "github.com/ma6254/tg_down/cmd/config"
+	"github.com/ma6254/tg_down/cmd/download"
 	"github.com/ma6254/tg_down/internal/build"
 )
 
@@ -48,7 +49,17 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&workDir, "workdir", "", "启动前切换的工作目录，数据与下载路径都相对于它解析")
 	opts.bind(rootCmd.PersistentFlags())
 
-	rootCmd.AddCommand(serveCmd, account.NewCommand(), configcmd.NewCommand(), versionCmd)
+	// 根命令不带子命令时等价于 serve，因此也要能接受 --listen。
+	// 这里注册成隐藏 flag：既不污染全局参数帮助，子命令（本地 flag 不继承）
+	// 也拿不到它，--listen 只出现在 serve 自己的帮助里。
+	opts.bindServe(rootCmd.Flags())
+	_ = rootCmd.Flags().MarkHidden("listen")
+
+	rootCmd.AddCommand(serveCmd, account.NewCommand(), configcmd.NewCommand(),
+		download.NewCommand(download.Defaults{
+			DownloadDir:    func() string { return opts.DownloadDir },
+			MaxConcurrency: func() int { return opts.MaxConcurrency },
+		}), versionCmd)
 
 	// 让帮助里的命令列表显示别称（如 list 的 ls）。
 	applyUsageTemplate(rootCmd)

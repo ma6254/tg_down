@@ -22,6 +22,11 @@ import (
 // serveShutdownTimeout 是收到退出信号后等待在途请求结束的上限。
 const serveShutdownTimeout = 10 * time.Second
 
+func init() {
+	// --listen 只属于 serve：它决定 HTTP 监听地址，其它子命令用不到。
+	opts.bindServe(serveCmd.Flags())
+}
+
 // serveCmd 启动常驻服务，也是不带子命令时的默认行为。
 var serveCmd = &cobra.Command{
 	Use:   "serve",
@@ -72,6 +77,10 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		GetAccount: getAccount,
 		// 在线资料：account info <id> --live 的 HTTP 版（联网查询，不落库）。
 		GetAccountLive: getAccountLive,
+		// 链接解析：download -u <链接> 的 HTTP 版（联网查询，不落库）。
+		PreviewLinks: previewLinks,
+		// 媒体缩略图：解析结果里的 token 换取小图。
+		GetMediaThumbnail: getMediaThumbnail,
 		// 系统配置：config list / set / unset 的 HTTP 版。
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,

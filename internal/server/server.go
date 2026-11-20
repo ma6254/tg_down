@@ -50,6 +50,15 @@ type Config struct {
 	// 可归因的失败；为 nil 时接口返回 501。
 	GetAccountLive func(ctx context.Context, id int64) (AccountLiveInfo, error)
 
+	// PreviewLinks 解析 Telegram 消息链接，返回正文、内嵌链接与媒体元数据（不落库）。
+	// 业务层用 ErrNoCurrentAccount / ErrAccountNoSession / ErrPreviewFailed 表示
+	// 可归因的失败；为 nil 时接口返回 501。
+	PreviewLinks func(ctx context.Context, req PreviewRequest) (PreviewResponse, error)
+
+	// GetMediaThumbnail 按解析接口返回的 token 下载媒体缩略图。
+	// 业务层用 ErrThumbnailNotFound 表示 token 过期或不存在；为 nil 时接口返回 501。
+	GetMediaThumbnail func(ctx context.Context, token string) (MediaThumbnail, error)
+
 	// GetSettings 返回全部配置项；为 nil 时接口返回 501。
 	GetSettings func(ctx context.Context) ([]Setting, error)
 
