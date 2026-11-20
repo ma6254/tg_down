@@ -30,38 +30,92 @@ func New(db *database.DB) *Service {
 // RecordInput 是登记账号所需的字段。
 type RecordInput struct {
 	Kind        string
+	Source      string
 	Name        string
 	Phone       string
 	Username    string
+	TelegramID  int64
 	SessionPath string
 }
 
-// Record 按 session 路径去重地写入账号记录。
+// Record 优先按 Telegram user.id 去重，其次按 session 路径。
+//
+// 手机号与用户名都可能变化：同一 Telegram 账号换绑手机号后 session 路径会变，
+// 只有 user.id 不变，所以拿到它时应以它为准。
 func (s *Service) Record(in RecordInput) (*database.Account, error) {
-	row, err := s.db.FindAccountBySessionPath(in.SessionPath)
-	switch {
-	case err == nil:
-		// 已存在：更新可变字段。
-	case errors.Is(err, gorm.ErrRecordNotFound):
-		row = &database.Account{
-			Kind:        in.Kind,
-			SessionPath: in.SessionPath,
+	var row *database.Account
+
+	if in.TelegramID > 0 {
+		existing, err := s.db.FindAccountByTelegramID(in.TelegramID)
+		switch {
+		case err == nil:
+			row = existing
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			// 继续按 session 路径兜底。
+		default:
+			return nil, err
 		}
-	default:
-		return nil, err
+	}
+
+	if row == nil {
+		existing, err := s.db.FindAccountBySessionPath(in.SessionPath)
+		switch {
+		case err == nil:
+			// 已存在：更新可变字段。
+			row = existing
+		case errors.Is(err, gorm.ErrRecordNotFound):
+			row = &database.Account{
+				Kind:        in.Kind,
+				SessionPath: in.SessionPath,
+			}
+		default:
+			return nil, err
+		}
 	}
 
 	row.Kind = in.Kind
+	if in.Source != "" {
+		row.Source = in.Source
+	}
 	row.Name = in.Name
 	row.Phone = in.Phone
 	row.Username = in.Username
+	row.SessionPath = in.SessionPath
 	row.State = database.AccountStateAuthed
 	row.LastError = ""
+	if in.TelegramID > 0 {
+		id := in.TelegramID
+		row.TelegramID = &id
+	}
 
 	if err := s.db.SaveAccount(row); err != nil {
 		return nil, err
 	}
 	return row, nil
+}
+
+// BindTelegramID 把联网查到的 user.id 绑定到本地账号。
+//
+// 已被另一条账号记录占用时不做改动（避免唯一索引冲突），返回 nil。
+func (s *Service) BindTelegramID(accountID, telegramID int64) error {
+	if telegramID <= 0 {
+		return nil
+	}
+	row, err := s.db.GetAccount(accountID)
+	if err != nil {
+		return err
+	}
+	if row.TelegramIDValue() == telegramID {
+		return nil
+	}
+	if other, err := s.db.FindAccountByTelegramID(telegramID); err == nil && other.ID != accountID {
+		return nil
+	} else if err != nil && !errors.Is(err, gorm.ErrRecordNotFound) {
+		return err
+	}
+	id := telegramID
+	row.TelegramID = &id
+	return s.db.SaveAccount(row)
 }
 
 // AutoSelectSingle 在库里只有一个账号时把它设为当前账号。
@@ -128,9 +182,11 @@ func (s *Service) ImportDesktop(sessionDir string, result *mtproto.DesktopProbeR
 		name := item.Account.DisplayName()
 		if _, err := s.Record(RecordInput{
 			Kind:        database.AccountKindMTProto,
+			Source:      database.AccountSourceDesktop,
 			Name:        name,
 			Phone:       phone,
 			Username:    item.Account.Username,
+			TelegramID:  item.Account.ID,
 			SessionPath: sessionPath,
 		}); err != nil {
 			return out, fmt.Errorf("写入账号数据库: %w", err)

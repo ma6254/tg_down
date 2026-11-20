@@ -57,6 +57,9 @@ type Media struct {
 	Date      time.Time
 	Caption   string
 	GroupedID int64 // 相册分组 ID，0 表示不属于相册
+	// Link 是这条消息的链接（相册里每张图可单独下载）；
+	// 私聊等无法拼出链接的场景为空，调用方退回原始输入链接。
+	Link string
 
 	Kind          MediaKind
 	FileName      string
@@ -66,12 +69,18 @@ type Media struct {
 	FileID        int64
 	AccessHash    int64
 	FileReference []byte
+	// PhotoSizeType 是照片完整文件对应的尺寸类型（如 x/y/w）；
+	// 下载照片时 InputPhotoFileLocation 必须带它，空串会被 Telegram 拒绝。
+	PhotoSizeType string
 	Duration      int // 秒；非音视频为 0
 	Width         int
 	Height        int
 
 	// Thumb 是列表用的缩略图；没有可用缩略图时为 nil（如音频、文档）。
 	Thumb *Thumb
+
+	// Preview 是正文大图用的更大尺寸；没有时为 nil，前端退回 Thumb。
+	Preview *Thumb
 
 	// Downloadable 表示大小没有超过当前账号的单文件上限，MaxSize 是该上限。
 	Downloadable bool
@@ -158,12 +167,13 @@ func mediaFromDocument(base Media, doc *tg.Document, media *tg.MessageMediaDocum
 	}
 	base.FileName = name
 	base.Thumb = documentThumb(doc)
+	base.Preview = documentPreview(doc)
 	return &base, nil
 }
 
 // mediaFromPhoto 提取照片：取最大尺寸作为下载目标。
 func mediaFromPhoto(base Media, photo *tg.Photo) (*Media, error) {
-	size, width, height := largestPhotoSize(photo.Sizes)
+	size, width, height, sizeType := largestPhotoSize(photo.Sizes)
 
 	base.Kind = MediaKindPhoto
 	base.FileID = photo.ID
@@ -171,10 +181,14 @@ func mediaFromPhoto(base Media, photo *tg.Photo) (*Media, error) {
 	base.FileReference = photo.FileReference
 	base.Size = size
 	base.Width, base.Height = width, height
+	// 下载完整照片时 InputPhotoFileLocation 必须带尺寸类型，空串会被 Telegram
+	// 当作无效引用（FILE_REFERENCE_EXPIRED）。
+	base.PhotoSizeType = sizeType
 	base.DCID = photo.DCID
 	base.MIME = "image/jpeg"
 	base.FileName = fmt.Sprintf("photo_%d.jpg", photo.ID)
 	base.Thumb = photoThumb(photo)
+	base.Preview = photoPreview(photo)
 	return &base, nil
 }
 
@@ -212,6 +226,88 @@ func photoThumb(photo *tg.Photo) *Thumb {
 		Width:         width,
 		Height:        height,
 	}
+}
+
+// photoPreview 挑一张更大的图给正文展示，没有合适尺寸时返回 nil。
+func photoPreview(photo *tg.Photo) *Thumb {
+	sizeType, width, height := pickPreviewSize(photo.Sizes)
+	if sizeType == "" {
+		return nil
+	}
+	return &Thumb{
+		Kind:          ThumbKindPhoto,
+		FileID:        photo.ID,
+		AccessHash:    photo.AccessHash,
+		FileReference: photo.FileReference,
+		SizeType:      sizeType,
+		DCID:          photo.DCID,
+		Width:         width,
+		Height:        height,
+	}
+}
+
+// documentPreview 挑一张更大的图给正文展示，没有合适尺寸时返回 nil。
+func documentPreview(doc *tg.Document) *Thumb {
+	sizeType, width, height := pickPreviewSize(doc.Thumbs)
+	if sizeType == "" {
+		return nil
+	}
+	return &Thumb{
+		Kind:          ThumbKindDocument,
+		FileID:        doc.ID,
+		AccessHash:    doc.AccessHash,
+		FileReference: doc.FileReference,
+		SizeType:      sizeType,
+		DCID:          doc.DCID,
+		Width:         width,
+		Height:        height,
+	}
+}
+
+// previewPreference 是正文大图的尺寸优先级：约 800px 宽足够清晰，又不会太重。
+var previewPreference = []string{"x", "y", "m", "s", "w"}
+
+// pickPreviewSize 按优先级挑正文大图尺寸；都没有时取面积最大的一个。
+func pickPreviewSize(sizes []tg.PhotoSizeClass) (sizeType string, width, height int) {
+	type dims struct{ w, h int }
+	available := make(map[string]dims, len(sizes))
+	var (
+		largestType string
+		largestW    int
+		largestH    int
+		largestArea int
+	)
+
+	for _, item := range sizes {
+		typ, w, h, ok := photoSizeInfo(item)
+		if !ok || typ == "" {
+			continue
+		}
+		available[typ] = dims{w: w, h: h}
+		if area := w * h; area > largestArea {
+			largestType, largestW, largestH, largestArea = typ, w, h, area
+		}
+	}
+
+	for _, want := range previewPreference {
+		if size, ok := available[want]; ok {
+			return want, size.w, size.h
+		}
+	}
+	return largestType, largestW, largestH
+}
+
+// photoSizeInfo 取尺寸项的类型与宽高；不可下载的尺寸（如 stripped）返回 false。
+func photoSizeInfo(item tg.PhotoSizeClass) (typ string, width, height int, ok bool) {
+	switch s := item.(type) {
+	case *tg.PhotoSize:
+		return s.Type, s.W, s.H, true
+	case *tg.PhotoSizeProgressive:
+		return s.Type, s.W, s.H, true
+	case *tg.PhotoCachedSize:
+		return s.Type, s.W, s.H, true
+	}
+	return "", 0, 0, false
 }
 
 // pickThumbSize 选择列表封面尺寸：优先 Telegram 的 m（约 320px），
@@ -268,33 +364,41 @@ func pickThumbSize(sizes []tg.PhotoSizeClass) (sizeType string, width, height in
 	return bestType, bestW, bestH
 }
 
-// largestPhotoSize 返回最大尺寸的字节数与宽高。
+// largestPhotoSize 返回最大尺寸的字节数、宽高与尺寸类型。
 //
 // 有的照片只提供 progressive 尺寸，其 Sizes 是渐进前缀的累计大小，
 // 最后一项才是完整文件；缓存尺寸则用字节长度估算。
-func largestPhotoSize(sizes []tg.PhotoSizeClass) (size int64, width, height int) {
+// 尺寸类型用于 InputPhotoFileLocation，空串会被 Telegram 拒绝。
+func largestPhotoSize(sizes []tg.PhotoSizeClass) (size int64, width, height int, sizeType string) {
+	var (
+		bestSize int64
+		bestW    int
+		bestH    int
+		bestType string
+	)
 	for _, item := range sizes {
 		var (
+			typ     string
 			curSize int64
 			curW    int
 			curH    int
 		)
 		switch s := item.(type) {
 		case *tg.PhotoSize:
-			curSize, curW, curH = int64(s.Size), s.W, s.H
+			typ, curSize, curW, curH = s.Type, int64(s.Size), s.W, s.H
 		case *tg.PhotoSizeProgressive:
+			typ, curW, curH = s.Type, s.W, s.H
 			if len(s.Sizes) > 0 {
 				curSize = int64(s.Sizes[len(s.Sizes)-1])
 			}
-			curW, curH = s.W, s.H
 		case *tg.PhotoCachedSize:
-			curSize, curW, curH = int64(len(s.Bytes)), s.W, s.H
+			typ, curSize, curW, curH = s.Type, int64(len(s.Bytes)), s.W, s.H
 		}
-		if curSize > size {
-			size, width, height = curSize, curW, curH
+		if curSize > bestSize {
+			bestSize, bestW, bestH, bestType = curSize, curW, curH, typ
 		}
 	}
-	return size, width, height
+	return bestSize, bestW, bestH, bestType
 }
 
 // fileLocation 返回完整文件的下载位置。
@@ -311,6 +415,7 @@ func (m *Media) fileLocation() (tg.InputFileLocationClass, error) {
 			ID:            m.FileID,
 			AccessHash:    m.AccessHash,
 			FileReference: m.FileReference,
+			ThumbSize:     m.PhotoSizeType,
 		}, nil
 	}
 	return &tg.InputDocumentFileLocation{

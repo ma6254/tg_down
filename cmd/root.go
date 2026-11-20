@@ -11,12 +11,23 @@ import (
 	"github.com/ma6254/tg_down/cmd/account"
 	configcmd "github.com/ma6254/tg_down/cmd/config"
 	"github.com/ma6254/tg_down/cmd/download"
+	"github.com/ma6254/tg_down/cmd/serve"
 	"github.com/ma6254/tg_down/internal/build"
 )
 
 var (
 	opts    = newOptions() // 服务参数，root 与 serve 共用
 	workDir string         // 启动前切换的工作目录
+
+	// serveCmd 既是 serve 子命令，也是不带子命令时根命令的默认行为：
+	// 两处共用同一份命令定义与同一个 opts，只额外在根上注册一个隐藏的 --listen。
+	serveCmd = serve.NewCommand(serve.Deps{
+		// --listen 绑定到根命令的 Options，根上另有一份隐藏的同名 flag。
+		BindListen: opts.bindServe,
+		WorkDir:    func() string { return workDir },
+		Validate:   opts.validate,
+		Options:    opts.serveOptions,
+	})
 )
 
 // rootCmd 是根命令：不带子命令时直接启动服务。
@@ -34,7 +45,7 @@ var rootCmd = &cobra.Command{
 	Args:          cobra.NoArgs,
 	SilenceUsage:  true,
 	SilenceErrors: true,
-	RunE:          runServe,
+	RunE:          serveCmd.RunE,
 }
 
 // Execute 是程序入口，由 main 调用。

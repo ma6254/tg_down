@@ -26,10 +26,11 @@ type Plan struct {
 // 规则：
 //   - 目录为 <root>/<会话标题>（flat 时直接用 <root>）；
 //   - 文件名清洗非法字符并限制长度；
-//   - 已存在同名且大小一致的文件视为完成（force 时忽略）；
+//   - 已存在同名且大小一致的文件视为完成（force 或 overwrite 时忽略）；
 //   - 同名但大小不同时追加 " (1)" 等后缀，避免覆盖；
-//   - 已有 .part 时按对齐后的体积续传。
-func NewPlan(root, chatTitle, fileName string, size int64, flat, force bool) (Plan, error) {
+//   - overwrite 时保留原文件名，完成后直接覆盖已有文件；
+//   - force 时从零开始（忽略已有 .part），否则按对齐后的体积续传。
+func NewPlan(root, chatTitle, fileName string, size int64, flat, force, overwrite bool) (Plan, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
 		root = "downloads"
@@ -52,12 +53,13 @@ func NewPlan(root, chatTitle, fileName string, size int64, flat, force bool) (Pl
 	}
 
 	final := filepath.Join(dir, name)
-	if !force {
+	if !force && !overwrite {
 		if info, err := os.Stat(final); err == nil && !info.IsDir() && size > 0 && info.Size() == size {
 			return Plan{FinalPath: final, Skip: true}, nil
 		}
 	}
-	if _, err := os.Stat(final); err == nil {
+	// 覆盖模式保留目标文件名，交给 rename 替换；否则避开同名文件。
+	if _, err := os.Stat(final); err == nil && !overwrite {
 		final = availablePath(final)
 	}
 

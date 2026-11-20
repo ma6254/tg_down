@@ -6,8 +6,12 @@
 //	route.go       路由表
 //	middleware.go  访问日志、panic 恢复、安全头、Bearer 鉴权
 //	web.go         前端接入（占位页 / proxy / dir）
+//	event_hub.go   SSE 广播器（/api/v1/events 的事件源）
+//	thumbnail_tokens.go 缩略图 token 登记与按需下载（/api/v1/media/thumbnail）
 //
 // 业务逻辑不放在这里：handler 只做参数解析、调用 internal/ 下的服务并写回 JSON。
+// 只有两类东西留在本包：为端点服务的传输层运行时状态（事件广播、缩略图 token），
+// 以及 HTTP 编解码本身。
 package server
 
 import (
@@ -50,14 +54,23 @@ type Config struct {
 	// 可归因的失败；为 nil 时接口返回 501。
 	GetAccountLive func(ctx context.Context, id int64) (AccountLiveInfo, error)
 
+	// GetAccountAvatar 返回账号头像（JPEG 字节，带磁盘缓存）。
+	// 业务层用 ErrAccountNotFound / ErrAccountNoSession / ErrThumbnailNotFound
+	// 表示可归因的失败；为 nil 时接口返回 501。
+	GetAccountAvatar func(ctx context.Context, id int64) (MediaThumbnail, error)
+
+	// LogoutAccount 注销账号：尽力吊销 Telegram session，并删除本地记录与文件。
+	// 业务层用 ErrAccountNotFound 表示账号不存在；为 nil 时接口返回 501。
+	LogoutAccount func(ctx context.Context, id int64) (AccountLogoutResult, error)
+
+	// DeleteAccount 只删除本地账号记录与 session 文件，不吊销 Telegram 会话。
+	// 业务层用 ErrAccountNotFound 表示账号不存在；为 nil 时接口返回 501。
+	DeleteAccount func(ctx context.Context, id int64) (AccountDeleteResult, error)
+
 	// PreviewLinks 解析 Telegram 消息链接，返回正文、内嵌链接与媒体元数据（不落库）。
 	// 业务层用 ErrNoCurrentAccount / ErrAccountNoSession / ErrPreviewFailed 表示
 	// 可归因的失败；为 nil 时接口返回 501。
 	PreviewLinks func(ctx context.Context, req PreviewRequest) (PreviewResponse, error)
-
-	// GetMediaThumbnail 按解析接口返回的 token 下载媒体缩略图。
-	// 业务层用 ErrThumbnailNotFound 表示 token 过期或不存在；为 nil 时接口返回 501。
-	GetMediaThumbnail func(ctx context.Context, token string) (MediaThumbnail, error)
 
 	// GetSettings 返回全部配置项；为 nil 时接口返回 501。
 	GetSettings func(ctx context.Context) ([]Setting, error)
@@ -65,6 +78,29 @@ type Config struct {
 	// UpdateSettings 应用部分更新（值为 nil 表示删除），返回更新后的全量配置。
 	// 业务层用 ErrSettingInvalid 表示未知键、值非法或只读；为 nil 时接口返回 501。
 	UpdateSettings func(ctx context.Context, patch SettingsPatch) ([]Setting, error)
+
+	// CreateDownloads 解析链接、创建下载任务并入队；为 nil 时接口返回 501。
+	CreateDownloads func(ctx context.Context, req DownloadCreateRequest) (DownloadCreateResponse, error)
+
+	// ListDownloads 返回任务列表，运行中的任务带实时进度；为 nil 时接口返回 501。
+	ListDownloads func(ctx context.Context, query DownloadListQuery) ([]DownloadTask, error)
+
+	// GetDownload 返回单个任务详情；为 nil 时接口返回 501。
+	GetDownload func(ctx context.Context, id uint) (DownloadTask, error)
+
+	// ControlDownload 执行 pause / resume / retry；为 nil 时接口返回 501。
+	ControlDownload func(ctx context.Context, id uint, action string) (DownloadTask, error)
+
+	// DeleteDownload 删除任务记录，deleteFile 为 true 时同时删除已下载文件；
+	// 为 nil 时接口返回 501。
+	DeleteDownload func(ctx context.Context, id uint, deleteFile bool) error
+
+	// GetDownloadThumbnail 返回任务卡片用的缩略图；为 nil 时接口返回 501。
+	GetDownloadThumbnail func(ctx context.Context, id uint) (MediaThumbnail, error)
+
+	// EventHub 是 SSE 广播器实例，由 cmd 层创建并交给下载管理器发布事件。
+	// 为 nil 时 /api/v1/events 返回 501。
+	EventHub *EventHub
 }
 
 // WebConfig 决定前端如何挂载到 / 上。

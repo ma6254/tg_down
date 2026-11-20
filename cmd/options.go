@@ -9,6 +9,8 @@ import (
 	"strings"
 
 	"github.com/spf13/pflag"
+
+	"github.com/ma6254/tg_down/cmd/serve"
 )
 
 // Options 是服务启动参数。
@@ -122,4 +124,19 @@ func (o *Options) authMode() string {
 		return "已启用 token"
 	}
 	return "未启用（仅回环）"
+}
+
+// serveOptions 汇总 serve 启动需要的参数快照。
+//
+// 取值要在 validate 之后才准确，所以 serve 在每次启动时重新取一份，
+// 而不是在构造命令时把值拷进去。
+func (o *Options) serveOptions() serve.Options {
+	return serve.Options{
+		Listen:         o.Listen,
+		AuthToken:      o.AuthToken,
+		DownloadDir:    o.DownloadDir,
+		MaxConcurrency: o.MaxConcurrency,
+		LogLevel:       o.LogLevel,
+		AuthMode:       o.authMode(),
+	}
 }

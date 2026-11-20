@@ -205,6 +205,30 @@ func (f *ThumbnailFetcher) Download(ctx context.Context, thumb Thumb) ([]byte, e
 	return buf.Bytes(), nil
 }
 
+// DownloadPeerPhoto 下载会话或用户的头像（inputPeerPhotoFileLocation）。
+func (f *ThumbnailFetcher) DownloadPeerPhoto(ctx context.Context, peer Peer, photoID int64) ([]byte, error) {
+	if photoID == 0 {
+		return nil, errors.New("头像照片 ID 为空")
+	}
+	input, err := peer.inputPeer()
+	if err != nil {
+		return nil, err
+	}
+
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	location := &tg.InputPeerPhotoFileLocation{Peer: input, PhotoID: photoID}
+	var buf bytes.Buffer
+	if _, err := f.client.Download(location).Stream(ctx, &buf); err != nil {
+		return nil, fmt.Errorf("下载头像: %w", friendlyError(err))
+	}
+	if buf.Len() == 0 {
+		return nil, errors.New("头像为空")
+	}
+	return buf.Bytes(), nil
+}
+
 // signalReady 只通知一次启动结果；Run 退出时也可能再调用，用 Once 兜底。
 func (f *ThumbnailFetcher) signalReady(err error) {
 	f.readyOnce.Do(func() {

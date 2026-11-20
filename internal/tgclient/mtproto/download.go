@@ -42,6 +42,9 @@ type DownloadOptions struct {
 	PoolSize int
 	Force    bool
 	Flat     bool
+	// Overwrite 为 true 时直接覆盖同名文件，而不是改用 " (1)" 后缀；
+	// 与 Force 配合时从零开始重新下载。
+	Overwrite bool
 
 	// OnStart 在真正开始传输前调用；plan.Offset > 0 表示续传。
 	OnStart func(job MediaJob, plan downloadsvc.Plan)
@@ -297,7 +300,7 @@ func downloadOne(ctx context.Context, pools *downloadPools, job MediaJob, opts D
 
 		// 同一目录下可能并发规划同名文件，串行化避免选中同一个目标。
 		planMu.Lock()
-		plan, err := downloadsvc.NewPlan(opts.RootDir, job.ChatTitle, job.FileName, size, opts.Flat, force)
+		plan, err := downloadsvc.NewPlan(opts.RootDir, job.ChatTitle, job.FileName, size, opts.Flat, force, opts.Overwrite)
 		planMu.Unlock()
 		if err != nil {
 			result.Err = err

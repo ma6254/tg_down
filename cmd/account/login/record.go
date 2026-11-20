@@ -25,9 +25,11 @@ func recordAccount(lo *loginOptions, acc *mtproto.Account, sessionPath string) (
 
 	return svc.Record(accountsvc.RecordInput{
 		Kind:        database.AccountKindMTProto,
+		Source:      database.AccountSourceManual,
 		Name:        name,
 		Phone:       acc.Phone,
 		Username:    acc.Username,
+		TelegramID:  acc.ID,
 		SessionPath: sessionPath,
 	})
 }

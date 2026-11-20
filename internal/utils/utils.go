@@ -1,8 +1,10 @@
 // Package utils 汇总命令层与业务层共用的小工具：
-// 打开数据库、读取代理、展示格式化。
+// 打开数据库、读取代理、文件读写、网络错误判断与展示格式化。
 package utils
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -54,6 +56,29 @@ func ResolveProxy() (string, error) {
 	return proxy, nil
 }
 
+// PrepareDatabase 打开数据库并完成建表、配置类型同步与默认配置写入。
+//
+// 服务启动时先调它再监听：并发首个请求各自 AutoMigrate 会撞上迁移竞态，
+// 提前初始化也能让数据库错误在启动阶段就暴露。
+func PrepareDatabase() error {
+	db, err := OpenDatabase()
+	if err != nil {
+		return fmt.Errorf("初始化数据库: %w", err)
+	}
+	if err := config.SyncTypes(db); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("同步配置类型: %w", err)
+	}
+	if err := config.SeedDefaults(db); err != nil {
+		_ = db.Close()
+		return fmt.Errorf("初始化默认配置: %w", err)
+	}
+	if err := db.Close(); err != nil {
+		return fmt.Errorf("关闭数据库: %w", err)
+	}
+	return nil
+}
+
 // ErrRecordNotFound 暴露 gorm 的未找到错误，方便命令层判断。
 var ErrRecordNotFound = gorm.ErrRecordNotFound
 
@@ -102,6 +127,25 @@ func FormatTime(t time.Time) string {
 		return "未知"
 	}
 	return t.Format("2006-01-02 15:04")
+}
+
+// UnixOrZero 把零值时间转成 0，方便 JSON 里用 omitempty 省略。
+func UnixOrZero(t time.Time) int64 {
+	if t.IsZero() {
+		return 0
+	}
+	return t.Unix()
+}
+
+// RandomToken 生成 128 位随机 token 的十六进制串（32 个字符）。
+//
+// 用于不可猜测的一次性地址；失败时退化成纳秒时间戳，至少保证唯一。
+func RandomToken() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(buf)
 }
 
 // MaskPhone 把手机号中间部分打码，避免打印明文。

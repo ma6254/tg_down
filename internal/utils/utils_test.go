@@ -1,6 +1,7 @@
 package utils
 
 import (
+	"encoding/hex"
 	"errors"
 	"strings"
 	"sync"
@@ -189,5 +190,67 @@ func TestOrDash(t *testing.T) {
 	}
 	if got := OrDash("x"); got != "x" {
 		t.Errorf("OrDash(x) = %q", got)
+	}
+}
+
+// TestUnixOrZero 确认零值时间输出 0，便于 JSON omitempty。
+func TestUnixOrZero(t *testing.T) {
+	if got := UnixOrZero(time.Time{}); got != 0 {
+		t.Errorf("零值 = %d，期望 0", got)
+	}
+	at := time.Date(2026, 11, 19, 0, 10, 0, 0, time.UTC)
+	if got := UnixOrZero(at); got != at.Unix() {
+		t.Errorf("UnixOrZero = %d，期望 %d", got, at.Unix())
+	}
+}
+
+// TestRandomToken 确认 token 是 32 位十六进制且不重复。
+func TestRandomToken(t *testing.T) {
+	seen := make(map[string]bool, 64)
+	for i := 0; i < 64; i++ {
+		token := RandomToken()
+		if len(token) != 32 {
+			t.Fatalf("token 长度 = %d（%q），期望 32", len(token), token)
+		}
+		if _, err := hex.DecodeString(token); err != nil {
+			t.Fatalf("token %q 不是十六进制: %v", token, err)
+		}
+		if seen[token] {
+			t.Fatalf("token 重复: %q", token)
+		}
+		seen[token] = true
+	}
+}
+
+// TestPrepareDatabase 确认建表、配置类型与默认值一次做好，且可重复调用。
+func TestPrepareDatabase(t *testing.T) {
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
+
+	if err := PrepareDatabase(); err != nil {
+		t.Fatalf("PrepareDatabase: %v", err)
+	}
+	// 幂等：再次调用不应报错或重复插入。
+	if err := PrepareDatabase(); err != nil {
+		t.Fatalf("重复调用: %v", err)
+	}
+
+	db, err := OpenDatabase()
+	if err != nil {
+		t.Fatalf("打开数据库: %v", err)
+	}
+	defer db.Close()
+
+	entries, err := config.NewStore(db).List()
+	if err != nil {
+		t.Fatalf("读取配置: %v", err)
+	}
+	found := false
+	for _, entry := range entries {
+		if entry.Key == config.KeyHTTPProxyEnabled {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("默认配置缺少 %s: %+v", config.KeyHTTPProxyEnabled, entries)
 	}
 }

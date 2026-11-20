@@ -25,6 +25,10 @@
       "description": "消息链接解析"
     },
     {
+      "name": "downloads",
+      "description": "视频/文件下载任务"
+    },
+    {
       "name": "settings",
       "description": "系统配置"
     }
@@ -213,6 +217,73 @@
             }
           }
         }
+      },
+      "delete": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "删除账号（仅本地）",
+        "description": "只删除本地账号记录、session 文件与头像缓存，不向 Telegram 注销会话；适用于桌面导入账号。",
+        "operationId": "deleteAccount",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已删除",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "removed_session"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "removed_session": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入删除账号功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/api/v1/accounts/{id}/live": {
@@ -282,6 +353,163 @@
           },
           "502": {
             "description": "联网查询失败（网络不可达、Telegram 报错、session 已失效）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts/{id}/avatar": {
+      "get": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "账号头像",
+        "description": "返回账号头像（JPEG）。服务端按 Telegram user.id 缓存到 <数据目录>/avatar/<user_id>.jpg，有效期 24 小时；旧版本按本地账号 ID 命名的文件会自动迁移。没有头像时 404，前端回退到名称首字符。",
+        "operationId": "getAccountAvatar",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "头像字节",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "账号没有可用的 session 文件且无缓存",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入头像功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "头像下载失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/accounts/{id}/logout": {
+      "post": {
+        "tags": [
+          "accounts"
+        ],
+        "summary": "退出登录",
+        "description": "尽力向 Telegram 发送 auth.logOut 吊销 session，然后删除本地账号记录与 session 文件。网络失败时仍会完成本地清理，此时 revoked=false。",
+        "operationId": "logoutAccount",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "已退出登录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "revoked",
+                    "removed_session"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "revoked": {
+                      "type": "boolean",
+                      "description": "Telegram 端是否成功注销；网络失败时为 false。"
+                    },
+                    "removed_session": {
+                      "type": "boolean",
+                      "description": "session 文件是否由删除流程清理。"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入登出功能",
             "content": {
               "application/json": {
                 "schema": {
@@ -445,9 +673,107 @@
                               "type": "object"
                             }
                           },
+                          "entities": {
+                            "type": "array",
+                            "description": "正文的富文本标注；offset/length 以 UTF-16 码元计，type 与 Bot API 的 MessageEntity 一致",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "type": {
+                                  "type": "string"
+                                },
+                                "offset": {
+                                  "type": "integer"
+                                },
+                                "length": {
+                                  "type": "integer"
+                                },
+                                "url": {
+                                  "type": "string",
+                                  "description": "text_link 的目标地址"
+                                },
+                                "user_id": {
+                                  "type": "integer",
+                                  "description": "text_mention 的用户 ID"
+                                },
+                                "language": {
+                                  "type": "string",
+                                  "description": "pre 的语言标记"
+                                },
+                                "document_id": {
+                                  "type": "integer",
+                                  "description": "custom_emoji 的贴纸文档 ID"
+                                },
+                                "collapsed": {
+                                  "type": "boolean",
+                                  "description": "blockquote 是否默认可折叠"
+                                },
+                                "date": {
+                                  "type": "integer",
+                                  "description": "date_time 的 Unix 时间戳（秒）"
+                                },
+                                "date_format": {
+                                  "type": "string",
+                                  "description": "date_time 的渲染格式：relative / time / time_long / date / date_long / weekday"
+                                }
+                              }
+                            }
+                          },
                           "media": {
                             "type": "object",
-                            "nullable": true
+                            "nullable": true,
+                            "description": "主媒体；相册消息是链接指向的那一条",
+                            "properties": {
+                              "kind": {
+                                "type": "string"
+                              },
+                              "file_name": {
+                                "type": "string"
+                              },
+                              "size": {
+                                "type": "integer",
+                                "format": "int64"
+                              },
+                              "message_id": {
+                                "type": "integer",
+                                "description": "媒体所在消息"
+                              },
+                              "link": {
+                                "type": "string",
+                                "description": "这条消息的链接，可单独入队；无法拼出时省略"
+                              },
+                              "downloadable": {
+                                "type": "boolean"
+                              }
+                            }
+                          },
+                          "medias": {
+                            "type": "array",
+                            "description": "相册的全部媒体（按消息 ID 升序）；非相册消息省略",
+                            "items": {
+                              "type": "object",
+                              "properties": {
+                                "kind": {
+                                  "type": "string"
+                                },
+                                "file_name": {
+                                  "type": "string"
+                                },
+                                "size": {
+                                  "type": "integer",
+                                  "format": "int64"
+                                },
+                                "message_id": {
+                                  "type": "integer"
+                                },
+                                "link": {
+                                  "type": "string"
+                                },
+                                "downloadable": {
+                                  "type": "boolean"
+                                }
+                              }
+                            }
                           },
                           "error": {
                             "type": "string"
@@ -594,6 +920,532 @@
           },
           "504": {
             "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/downloads": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "创建下载任务",
+        "description": "解析 Telegram 消息链接，按消息里的媒体创建下载任务并立即入队；同一条链接重复创建时返回已有任务，不重复下载。任务由后台 worker 执行，进度通过列表或详情轮询。",
+        "operationId": "createDownloads",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "links"
+                ],
+                "properties": {
+                  "links": {
+                    "type": "array",
+                    "maxItems": 200,
+                    "items": {
+                      "type": "string"
+                    },
+                    "description": "Telegram 消息链接，一行一条由调用方拆分"
+                  },
+                  "overwrite": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "为 true 时覆盖同名文件并从零下载；默认遇到同名文件会追加 (1) 序号"
+                  }
+                }
+              },
+              "example": {
+                "links": [
+                  "https://t.me/JPD233/2522"
+                ],
+                "overwrite": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "创建结果；单条链接失败写在 failed 里，整体仍返回 201",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "created": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
+                      },
+                      "description": "新建并已入队的任务 ID"
+                    },
+                    "existing": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
+                      },
+                      "description": "之前已存在、未重复入队的任务 ID"
+                    },
+                    "skipped": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "link": {
+                            "type": "string"
+                          },
+                          "reason": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "没有可下载媒体或超过单文件上限的链接"
+                    },
+                    "failed": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "link": {
+                            "type": "string"
+                          },
+                          "error": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "description": "链接解析或消息查询失败的条目"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "没有当前账号，或账号的 session 不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "连接 Telegram 失败或 Telegram 报错",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载任务列表",
+        "description": "按创建时间倒序返回任务；running 任务的 offset 与 speed 来自内存里的实时进度。",
+        "operationId": "listDownloads",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "required": false,
+            "description": "按状态筛选：pending / running / paused / done / failed",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "最多返回多少条，1-200，默认 100",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 200,
+              "default": 100
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/DownloadTask"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/{id}": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载任务详情",
+        "operationId": "getDownload",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "任务详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadTask"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "删除下载任务",
+        "description": "删除任务记录；运行中的任务会先取消。delete_file=true 时同时删除已下载文件，.part 临时文件总是清理。",
+        "operationId": "deleteDownload",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "delete_file",
+            "in": "query",
+            "required": false,
+            "description": "是否同时删除已下载文件",
+            "schema": {
+              "type": "boolean",
+              "default": false
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/{id}/{action}": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "暂停 / 恢复 / 重试下载任务",
+        "description": "pause 取消运行中的任务并保留 .part；resume 只能用于 paused；retry 只能用于 failed。恢复与重试都会从断点继续。",
+        "operationId": "controlDownload",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "action",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pause",
+                "resume",
+                "retry"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "操作后的任务状态",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadTask"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "任务状态不允许该操作",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/{id}/thumbnail": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载任务缩略图",
+        "description": "任务卡片封面。首次访问按需解析消息、下载封面并缓存到数据库；没有可用封面时返回 404。",
+        "operationId": "getDownloadThumbnail",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "缩略图字节",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入缩略图",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "缩略图下载失败",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/events": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载任务实时事件（SSE）",
+        "description": "text/event-stream 事件流。事件类型：task.update（完整任务快照）、task.progress（{id, offset, speed, size}）、task.deleted（{id}）、ping（15 秒保活）。前端用 fetch 读流以便携带 Authorization；断线重连后应重新拉取任务列表对齐。",
+        "operationId": "downloadEvents",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "SSE 事件流",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入实时事件",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
           }
         }
       }
@@ -938,6 +1790,15 @@
               "botapi"
             ]
           },
+          "source": {
+            "type": "string",
+            "enum": [
+              "manual",
+              "desktop",
+              "bot"
+            ],
+            "description": "账号来源：manual 手动登录、desktop 从 Telegram Desktop 导入、bot Bot 接入；旧数据省略。"
+          },
           "name": {
             "type": "string"
           },
@@ -947,6 +1808,11 @@
           "phone": {
             "type": "string",
             "description": "Telegram 返回的手机号，不带 + 号；展示时请打码。"
+          },
+          "telegram_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Telegram 的 user.id，换手机号/用户名不变；未绑定或未联网时省略。"
           },
           "state": {
             "type": "string",
@@ -1101,6 +1967,111 @@
             "type": "integer",
             "format": "int64",
             "description": "最近活跃时间，Unix 秒。"
+          }
+        }
+      },
+      "DownloadTask": {
+        "type": "object",
+        "required": [
+          "id",
+          "link",
+          "status",
+          "file_name",
+          "file_size",
+          "offset",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "link": {
+            "type": "string",
+            "description": "创建任务时使用的 Telegram 消息链接，同时作为唯一键。"
+          },
+          "account_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "chat_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "chat_title": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "file_size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "photo",
+              "video",
+              "audio",
+              "document"
+            ]
+          },
+          "mime": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "running",
+              "paused",
+              "done",
+              "failed"
+            ]
+          },
+          "offset": {
+            "type": "integer",
+            "format": "int64",
+            "description": "已下载字节数；续传时从 .part 的大小开始。"
+          },
+          "speed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "B/s，只有 running 时有意义。"
+          },
+          "error": {
+            "type": "string",
+            "description": "失败原因或暂停原因；成功后为空。"
+          },
+          "save_path": {
+            "type": "string",
+            "description": "最终文件路径；开始下载后即有值，完成后指向正式文件。"
+          },
+          "overwrite": {
+            "type": "boolean",
+            "description": "该任务会覆盖同名文件（创建时传入 overwrite=true）。"
+          },
+          "thumbnail_url": {
+            "type": "string",
+            "description": "任务卡片缩略图地址（创建时登记，token 会过期）；缺失时前端改用 GET /downloads/{id}/thumbnail。"
+          },
+          "preview_url": {
+            "type": "string",
+            "description": "较大尺寸预览图地址，供图片查看器使用；缺失时退回缩略图。"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "创建时间，Unix 秒。"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "最近更新时间，Unix 秒。"
           }
         }
       },

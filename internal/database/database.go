@@ -95,8 +95,11 @@ func (d *DB) Install() error {
 
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		if err = d.AutoMigrate(&Account{}, &Setting{}); err == nil {
-			return nil
+		if err = d.AutoMigrate(&Account{}, &Setting{}, &DownloadTask{}); err == nil {
+			// 缩略图已改存文件缓存，旧列的 BLOB 不再使用，启动时清掉。
+			if err = d.dropLegacyThumbnailColumn(); err == nil {
+				return nil
+			}
 		}
 		if !retryableMigrationError(err) {
 			return err

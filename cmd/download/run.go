@@ -200,6 +200,7 @@ func runDownload(cmd *cobra.Command, opts *options) error {
 		Concurrency: concurrency,
 		Threads:     opts.Threads,
 		Force:       opts.Force,
+		Overwrite:   opts.Force,
 		Flat:        opts.Flat,
 		OnStart:     progress.start,
 		OnProgress:  progress.tick,

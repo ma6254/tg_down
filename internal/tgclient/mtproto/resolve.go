@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,7 @@ type Peer struct {
 	Title      string
 	Username   string
 	Broadcast  bool // 广播频道（评论链接只对广播频道有意义）
+	Self       bool // 用户会话是否就是当前账号（收藏夹）
 }
 
 // inputPeer 返回后续请求可复用的 gotd peer。
@@ -59,19 +61,54 @@ func (p Peer) inputChannel() (tg.InputChannelClass, error) {
 	return &tg.InputChannel{ChannelID: p.ID, AccessHash: p.AccessHash}, nil
 }
 
+// PeerPhoto 是会话或用户头像的定位信息（用 inputPeerPhotoFileLocation 下载）。
+type PeerPhoto struct {
+	Peer    Peer
+	PhotoID int64
+}
+
+// Sender 是群聊消息的发送者（不含广播频道，频道帖子没有个人发送者）。
+type Sender struct {
+	Peer     Peer
+	Name     string
+	Username string
+	Self     bool
+	Avatar   *PeerPhoto
+}
+
 // LinkResult 是一条链接的查询结果；Err 非空时其它字段无意义。
 //
 // Text 是消息正文（媒体消息则是说明文字）。纯文本消息没有 Media，
 // 但 Text 仍然有值，下载流程可以据此提示「没有可下载的媒体」。
 // Links 是正文里内嵌的链接（text_link / url 实体），按出现顺序去重。
+// Entities 是正文的完整富文本标注，偏移已与裁剪后的 Text 对齐。
+// Medias 是相册的全部媒体（按消息 ID 升序）；非相册消息为空，只用 Media。
 type LinkResult struct {
-	Target    link.Target
-	Chat      Peer
-	MessageID int
-	Text      string
-	Links     []MessageLink
-	Media     *Media
-	Err       error
+	Target     link.Target
+	Chat       Peer
+	ChatAvatar *PeerPhoto
+	Sender     *Sender
+	MessageID  int
+	Text       string
+	Links      []MessageLink
+	Entities   []MessageEntity
+	Media      *Media
+	Medias     []*Media
+	Err        error
+}
+
+// MessageURL 返回一条消息的链接；私聊等拼不出链接的场景返回空串。
+func (p Peer) MessageURL(messageID int) string {
+	if messageID <= 0 {
+		return ""
+	}
+	if p.Username != "" {
+		return fmt.Sprintf("https://t.me/%s/%d", p.Username, messageID)
+	}
+	if p.Kind == PeerKindChannel {
+		return fmt.Sprintf("https://t.me/c/%d/%d", p.ID, messageID)
+	}
+	return ""
 }
 
 // ResolveLinks 解析链接指向的会话与消息，并提取媒体信息。
@@ -146,7 +183,7 @@ func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]Lin
 				ids = append(ids, messageIDs[i])
 			}
 
-			messages, err := fetchMessages(ctx, client.API(), peer, ids)
+			messages, users, chatPhotoID, err := fetchMessages(ctx, client.API(), peer, ids)
 			if err != nil {
 				for _, i := range indexes {
 					results[i].Err = err
@@ -162,8 +199,16 @@ func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]Lin
 				}
 
 				results[i].Chat = peers[i]
+				if chatPhotoID != 0 {
+					results[i].ChatAvatar = &PeerPhoto{Peer: peers[i], PhotoID: chatPhotoID}
+				}
+				if groupLike(peers[i]) {
+					results[i].Sender = senderOf(msg, users)
+				}
 				results[i].MessageID = messageIDs[i]
-				results[i].Text = strings.TrimSpace(msg.Message)
+				text, entities := trimMessage(msg.Message, messageEntities(msg))
+				results[i].Text = text
+				results[i].Entities = entities
 				results[i].Links = messageLinks(msg)
 
 				media, err := mediaFromMessage(msg)
@@ -178,7 +223,19 @@ func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]Lin
 
 				media.MaxSize = maxSize
 				media.Downloadable = media.Size <= maxSize
+				media.Link = peers[i].MessageURL(media.MessageID)
 				results[i].Media = media
+
+				// 相册的每条媒体是独立消息：链接通常指向第一张，
+				// 只取这一条会把整组图片/视频漏掉。
+				if media.GroupedID != 0 {
+					album, err := fetchAlbum(ctx, client.API(), peers[i], msg.ID, media.GroupedID)
+					if err != nil {
+						// 相册读取失败不影响已拿到的这一条。
+						continue
+					}
+					results[i].Medias = albumMedias(peers[i], album, media.GroupedID, maxSize)
+				}
 			}
 		}
 		return nil
@@ -383,23 +440,30 @@ func (r *peerResolver) loadDialogs(ctx context.Context) error {
 // 其它会话逐条走 getHistory（数量通常很少）。
 //
 // 返回的 map 只包含真正取到的消息；调用方据此判断哪些消息已删除。
-func fetchMessages(ctx context.Context, api *tg.Client, peer Peer, ids []int) (map[int]*tg.Message, error) {
+// users 与 chatPhotoID 用于群聊展示发送者、群头像；取不到的字段为空/0。
+func fetchMessages(ctx context.Context, api *tg.Client, peer Peer, ids []int) (map[int]*tg.Message, map[int64]*tg.User, int64, error) {
 	out := make(map[int]*tg.Message, len(ids))
+	users := make(map[int64]*tg.User)
+	var chatPhotoID int64
 
 	if peer.Kind != PeerKindChannel {
 		for _, id := range ids {
-			msg, err := fetchMessage(ctx, api, peer, id)
+			msg, msgUsers, photoID, err := fetchMessage(ctx, api, peer, id)
 			if err != nil {
 				continue
 			}
 			out[msg.ID] = msg
+			mergeUsers(users, msgUsers)
+			if photoID != 0 {
+				chatPhotoID = photoID
+			}
 		}
-		return out, nil
+		return out, users, chatPhotoID, nil
 	}
 
 	input, err := peer.inputChannel()
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 
 	const chunkSize = 100
@@ -420,23 +484,29 @@ func fetchMessages(ctx context.Context, api *tg.Client, peer Peer, ids []int) (m
 			ID:      inputs,
 		})
 		if err != nil {
-			return nil, fmt.Errorf("读取消息: %w", friendlyError(err))
+			return nil, nil, 0, fmt.Errorf("读取消息: %w", friendlyError(err))
 		}
 		for _, item := range messagesOf(res) {
 			if msg, ok := item.(*tg.Message); ok {
 				out[msg.ID] = msg
 			}
 		}
+		mergeUsers(users, usersOf(res))
+		if photoID := chatPhotoOf(res, peer.ID); photoID != 0 {
+			chatPhotoID = photoID
+		}
 	}
-	return out, nil
+	return out, users, chatPhotoID, nil
 }
 
 // fetchMessage 按「消息 ID + 1」读一条历史，取回的必须是目标消息本身，
 // 否则说明消息已删除；这种取法对频道、普通群和私聊都适用。
-func fetchMessage(ctx context.Context, api *tg.Client, peer Peer, messageID int) (*tg.Message, error) {
+//
+// 同时带回响应里的用户与群头像，供群聊展示发送者信息。
+func fetchMessage(ctx context.Context, api *tg.Client, peer Peer, messageID int) (*tg.Message, map[int64]*tg.User, int64, error) {
 	input, err := peer.inputPeer()
 	if err != nil {
-		return nil, err
+		return nil, nil, 0, err
 	}
 
 	res, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
@@ -445,7 +515,7 @@ func fetchMessage(ctx context.Context, api *tg.Client, peer Peer, messageID int)
 		Limit:    1,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("读取消息 %d: %w", messageID, friendlyError(err))
+		return nil, nil, 0, fmt.Errorf("读取消息 %d: %w", messageID, friendlyError(err))
 	}
 
 	for _, item := range messagesOf(res) {
@@ -454,11 +524,70 @@ func fetchMessage(ctx context.Context, api *tg.Client, peer Peer, messageID int)
 			continue
 		}
 		if msg.ID != messageID {
-			return nil, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
+			return nil, nil, 0, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
 		}
-		return msg, nil
+		return msg, usersOf(res), chatPhotoOf(res, peer.ID), nil
 	}
-	return nil, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
+	return nil, nil, 0, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
+}
+
+// fetchAlbum 读取消息所在相册的全部消息。
+//
+// 相册的每条媒体是独立消息，ID 连续且 grouped_id 相同；链接通常指向第一条，
+// 只按 ID 取一条会漏掉整组。这里以目标消息为基准取一段历史再按分组过滤。
+func fetchAlbum(ctx context.Context, api *tg.Client, peer Peer, messageID int, groupedID int64) ([]*tg.Message, error) {
+	input, err := peer.inputPeer()
+	if err != nil {
+		return nil, err
+	}
+
+	// 相册最多 10 条；从 messageID+11 往回取 30 条，覆盖前后相邻项。
+	offset := messageID + 11
+	if offset < 11 {
+		offset = 11
+	}
+	res, err := api.MessagesGetHistory(ctx, &tg.MessagesGetHistoryRequest{
+		Peer:     input,
+		OffsetID: offset,
+		Limit:    30,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("读取相册: %w", friendlyError(err))
+	}
+
+	out := make([]*tg.Message, 0, 10)
+	for _, item := range messagesOf(res) {
+		msg, ok := item.(*tg.Message)
+		if !ok {
+			continue
+		}
+		if id, ok := msg.GetGroupedID(); ok && id == groupedID {
+			out = append(out, msg)
+		}
+	}
+	return out, nil
+}
+
+// albumMedias 把同组消息转成媒体列表，按消息 ID 升序，并补齐大小上限与链接。
+func albumMedias(peer Peer, messages []*tg.Message, groupedID, maxSize int64) []*Media {
+	out := make([]*Media, 0, len(messages))
+	for _, msg := range messages {
+		if id, ok := msg.GetGroupedID(); !ok || id != groupedID {
+			continue
+		}
+		media, err := mediaFromMessage(msg)
+		if err != nil {
+			continue
+		}
+		media.MaxSize = maxSize
+		media.Downloadable = media.Size <= maxSize
+		media.Link = peer.MessageURL(media.MessageID)
+		out = append(out, media)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i].MessageID < out[j].MessageID
+	})
+	return out
 }
 
 // dialogsOf 拆出会话列表响应里的各部分。
@@ -483,6 +612,105 @@ func messagesOf(res tg.MessagesMessagesClass) []tg.MessageClass {
 		return v.Messages
 	}
 	return nil
+}
+
+// chatsOf 取出响应里的会话列表（含群头像）。
+func chatsOf(res tg.MessagesMessagesClass) []tg.ChatClass {
+	switch v := res.(type) {
+	case *tg.MessagesMessages:
+		return v.Chats
+	case *tg.MessagesMessagesSlice:
+		return v.Chats
+	case *tg.MessagesChannelMessages:
+		return v.Chats
+	}
+	return nil
+}
+
+// usersOf 把响应里的用户（发送者）转成 ID 索引。
+func usersOf(res tg.MessagesMessagesClass) map[int64]*tg.User {
+	var list []tg.UserClass
+	switch v := res.(type) {
+	case *tg.MessagesMessages:
+		list = v.Users
+	case *tg.MessagesMessagesSlice:
+		list = v.Users
+	case *tg.MessagesChannelMessages:
+		list = v.Users
+	}
+	out := make(map[int64]*tg.User, len(list))
+	for _, item := range list {
+		if user, ok := item.(*tg.User); ok {
+			out[user.ID] = user
+		}
+	}
+	return out
+}
+
+// mergeUsers 合并多次响应里的用户，后到的覆盖先到的。
+func mergeUsers(dst, src map[int64]*tg.User) {
+	for id, user := range src {
+		dst[id] = user
+	}
+}
+
+// chatPhotoOf 返回指定会话的头像照片 ID；没有头像时返回 0。
+func chatPhotoOf(res tg.MessagesMessagesClass, chatID int64) int64 {
+	for _, chat := range chatsOf(res) {
+		switch c := chat.(type) {
+		case *tg.Channel:
+			if c.ID == chatID {
+				return chatPhotoID(c.Photo)
+			}
+		case *tg.Chat:
+			if c.ID == chatID {
+				return chatPhotoID(c.Photo)
+			}
+		}
+	}
+	return 0
+}
+
+func chatPhotoID(photo tg.ChatPhotoClass) int64 {
+	if p, ok := photo.(*tg.ChatPhoto); ok {
+		return p.PhotoID
+	}
+	return 0
+}
+
+func userPhotoID(user *tg.User) int64 {
+	if p, ok := user.Photo.(*tg.UserProfilePhoto); ok {
+		return p.PhotoID
+	}
+	return 0
+}
+
+// groupLike 判断是否需要展示群头像与发送者（普通群、超级群；不含广播频道）。
+func groupLike(p Peer) bool {
+	return p.Kind == PeerKindGroup || (p.Kind == PeerKindChannel && !p.Broadcast)
+}
+
+// senderOf 从消息的 FromID 找到发送者资料与头像。
+func senderOf(msg *tg.Message, users map[int64]*tg.User) *Sender {
+	from, ok := msg.FromID.(*tg.PeerUser)
+	if !ok || from == nil {
+		return nil
+	}
+	user, ok := users[from.UserID]
+	if !ok || user == nil {
+		return nil
+	}
+	peer := peerFromUser(user)
+	sender := &Sender{
+		Peer:     peer,
+		Name:     peer.Title,
+		Username: peer.Username,
+		Self:     peer.Self,
+	}
+	if photoID := userPhotoID(user); photoID != 0 {
+		sender.Avatar = &PeerPhoto{Peer: peer, PhotoID: photoID}
+	}
+	return sender
 }
 
 // peerFromResolved 从 contacts.resolveUsername 的结果里取出会话与标题。
@@ -550,6 +778,7 @@ func peerFromUser(user *tg.User) Peer {
 		AccessHash: user.AccessHash,
 		Title:      userDisplayName(user),
 		Username:   user.Username,
+		Self:       user.Self,
 	}
 }
 

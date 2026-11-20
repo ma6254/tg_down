@@ -1,9 +1,8 @@
-package cmd
+package serve
 
 import (
 	"context"
 	"fmt"
-	"time"
 
 	accountsvc "github.com/ma6254/tg_down/internal/account"
 	"github.com/ma6254/tg_down/internal/config"
@@ -109,17 +108,9 @@ func probeDevices(devices []mtproto.Device) []server.ProbeDevice {
 			DeviceModel:   d.DeviceModel,
 			SystemVersion: d.SystemVersion,
 			Country:       d.Country,
-			CreatedAt:     unixOrZero(d.CreatedAt),
-			ActiveAt:      unixOrZero(d.ActiveAt),
+			CreatedAt:     utils.UnixOrZero(d.CreatedAt),
+			ActiveAt:      utils.UnixOrZero(d.ActiveAt),
 		})
 	}
 	return out
-}
-
-// unixOrZero 把零值时间转成 0，方便 JSON 里用 omitempty 省略。
-func unixOrZero(t time.Time) int64 {
-	if t.IsZero() {
-		return 0
-	}
-	return t.Unix()
 }

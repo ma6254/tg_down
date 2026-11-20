@@ -48,6 +48,7 @@ coverage.html
 /.tmp/
 /.gocache/
 /.gomodcache/
+/.tmp-gocache/
 /vendor/
 
 # ---------------------------------------------------------------------------

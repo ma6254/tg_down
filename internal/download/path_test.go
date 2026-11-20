@@ -46,7 +46,7 @@ func TestNewPlanSkipExisting(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewPlan(root, chat, "video.mp4", 10, false, false)
+	plan, err := NewPlan(root, chat, "video.mp4", 10, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,12 +55,49 @@ func TestNewPlanSkipExisting(t *testing.T) {
 	}
 
 	// force 时即使大小一致也要重新下载。
-	forced, err := NewPlan(root, chat, "video.mp4", 10, false, true)
+	forced, err := NewPlan(root, chat, "video.mp4", 10, false, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if forced.Skip {
 		t.Error("force 时不应跳过")
+	}
+}
+
+// TestNewPlanOverwrite 覆盖模式保留原文件名、不跳过，也不追加序号。
+func TestNewPlanOverwrite(t *testing.T) {
+	root := t.TempDir()
+	chat := "某群"
+	dir := filepath.Join(root, chat)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "video.mp4")
+	if err := os.WriteFile(path, make([]byte, 10), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	plan, err := NewPlan(root, chat, "video.mp4", 10, false, false, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Skip {
+		t.Error("overwrite 时不应跳过已有文件")
+	}
+	if plan.FinalPath != path {
+		t.Errorf("FinalPath = %q，期望覆盖 %q", plan.FinalPath, path)
+	}
+
+	// force + overwrite：从零开始，且仍指向原文件。
+	forced, err := NewPlan(root, chat, "video.mp4", 10, false, true, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forced.Offset != 0 {
+		t.Errorf("force 时 Offset = %d，期望 0", forced.Offset)
+	}
+	if forced.FinalPath != path {
+		t.Errorf("force+overwrite FinalPath = %q，期望 %q", forced.FinalPath, path)
 	}
 }
 
@@ -75,7 +112,7 @@ func TestNewPlanConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewPlan(root, "某群", "video.mp4", 20, false, false)
+	plan, err := NewPlan(root, "某群", "video.mp4", 20, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -100,7 +137,7 @@ func TestNewPlanResume(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	plan, err := NewPlan(root, "某群", "video.mp4", 10*1024*1024, false, false)
+	plan, err := NewPlan(root, "某群", "video.mp4", 10*1024*1024, false, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +146,7 @@ func TestNewPlanResume(t *testing.T) {
 	}
 
 	// force 时从零开始。
-	forced, err := NewPlan(root, "某群", "video.mp4", 10*1024*1024, false, true)
+	forced, err := NewPlan(root, "某群", "video.mp4", 10*1024*1024, false, true, true)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +158,7 @@ func TestNewPlanResume(t *testing.T) {
 // TestNewPlanFlat 不按会话建子目录。
 func TestNewPlanFlat(t *testing.T) {
 	root := t.TempDir()
-	plan, err := NewPlan(root, "某群", "video.mp4", 100, true, false)
+	plan, err := NewPlan(root, "某群", "video.mp4", 100, true, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

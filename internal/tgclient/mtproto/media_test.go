@@ -140,6 +140,68 @@ func TestMediaFromPhoto(t *testing.T) {
 	if media.MIME != "image/jpeg" {
 		t.Errorf("MIME = %q", media.MIME)
 	}
+	if media.PhotoSizeType != "y" {
+		t.Errorf("PhotoSizeType = %q，期望 y（下载照片需要尺寸类型）", media.PhotoSizeType)
+	}
+}
+
+// TestAlbumMedias 确认相册按消息 ID 排序、过滤不同分组，并补上单条链接。
+func TestAlbumMedias(t *testing.T) {
+	const groupedID = int64(777)
+	peer := Peer{Kind: PeerKindChannel, ID: 123456, Username: "AV_mys"}
+
+	messages := []*tg.Message{
+		albumPhotoMessage(8076, groupedID),
+		albumPhotoMessage(8074, groupedID),
+		albumPhotoMessage(8077, 999), // 不同分组，应排除
+		albumPhotoMessage(8075, groupedID),
+	}
+
+	medias := albumMedias(peer, messages, groupedID, 2<<30)
+	if len(medias) != 3 {
+		t.Fatalf("媒体数量 = %d，期望 3", len(medias))
+	}
+	for i, wantID := range []int{8074, 8075, 8076} {
+		if medias[i].MessageID != wantID {
+			t.Errorf("第 %d 个消息 ID = %d，期望 %d", i+1, medias[i].MessageID, wantID)
+		}
+	}
+	if medias[0].Link != "https://t.me/AV_mys/8074" {
+		t.Errorf("Link = %q", medias[0].Link)
+	}
+	if !medias[0].Downloadable {
+		t.Error("小于上限时应可下载")
+	}
+}
+
+// TestPeerMessageURL 覆盖公开频道与私有频道的链接拼法。
+func TestPeerMessageURL(t *testing.T) {
+	public := Peer{Kind: PeerKindChannel, ID: 1, Username: "av_mys"}
+	if got := public.MessageURL(8074); got != "https://t.me/av_mys/8074" {
+		t.Errorf("公开频道链接 = %q", got)
+	}
+	private := Peer{Kind: PeerKindChannel, ID: 3713824040}
+	if got := private.MessageURL(8074); got != "https://t.me/c/3713824040/8074" {
+		t.Errorf("私有频道链接 = %q", got)
+	}
+	if got := (Peer{Kind: PeerKindUser, ID: 1}).MessageURL(1); got != "" {
+		t.Errorf("私聊不应拼出链接，实际 %q", got)
+	}
+}
+
+// albumPhotoMessage 构造一条相册照片消息。
+func albumPhotoMessage(id int, groupedID int64) *tg.Message {
+	msg := &tg.Message{ID: id, Message: "相册"}
+	msg.SetMedia(&tg.MessageMediaPhoto{Photo: &tg.Photo{
+		ID:         int64(id),
+		AccessHash: int64(id) * 10,
+		DCID:       2,
+		Sizes: []tg.PhotoSizeClass{
+			&tg.PhotoSize{Type: "x", W: 800, H: 600, Size: id},
+		},
+	}})
+	msg.SetGroupedID(groupedID)
+	return msg
 }
 
 // TestMediaFromMessageEmpty 覆盖没有媒体的消息。
@@ -165,11 +227,11 @@ func TestMediaFromUnsupported(t *testing.T) {
 
 // TestLargestPhotoSize 覆盖只有缓存尺寸时的兜底。
 func TestLargestPhotoSize(t *testing.T) {
-	size, width, height := largestPhotoSize([]tg.PhotoSizeClass{
+	size, width, height, sizeType := largestPhotoSize([]tg.PhotoSizeClass{
 		&tg.PhotoCachedSize{Type: "x", W: 90, H: 60, Bytes: []byte{1, 2, 3, 4}},
 	})
-	if size != 4 || width != 90 || height != 60 {
-		t.Fatalf("largestPhotoSize = (%d, %d, %d)", size, width, height)
+	if size != 4 || width != 90 || height != 60 || sizeType != "x" {
+		t.Fatalf("largestPhotoSize = (%d, %d, %d, %q)", size, width, height, sizeType)
 	}
 }
 
@@ -233,6 +295,68 @@ func TestPhotoThumb(t *testing.T) {
 	}
 	if media.Thumb.SizeType != "s" {
 		t.Errorf("SizeType = %q，期望 s", media.Thumb.SizeType)
+	}
+}
+
+// TestPhotoPreview 确认正文大图优先 x（800px）而不是列表封面用的 s。
+func TestPhotoPreview(t *testing.T) {
+	photo := &tg.Photo{
+		ID:         99,
+		AccessHash: 9900,
+		DCID:       2,
+		Sizes: []tg.PhotoSizeClass{
+			&tg.PhotoSize{Type: "s", W: 100, H: 80, Size: 1000},
+			&tg.PhotoSize{Type: "x", W: 800, H: 640, Size: 50000},
+			&tg.PhotoSize{Type: "y", W: 1280, H: 1024, Size: 90000},
+		},
+	}
+	media, err := mediaFromMessage(newMessage(&tg.MessageMediaPhoto{Photo: photo}))
+	if err != nil {
+		t.Fatalf("mediaFromMessage 报错: %v", err)
+	}
+	if media.Preview == nil {
+		t.Fatal("没有提取到正文大图")
+	}
+	if media.Preview.Kind != ThumbKindPhoto || media.Preview.SizeType != "x" {
+		t.Errorf("Preview = %+v，期望 photo/x", media.Preview)
+	}
+	if media.Preview.Width != 800 || media.Preview.Height != 640 {
+		t.Errorf("Preview 尺寸 = %d×%d", media.Preview.Width, media.Preview.Height)
+	}
+}
+
+// TestDocumentPreview 确认文档类媒体的正文大图优先 y（1280px）。
+func TestDocumentPreview(t *testing.T) {
+	doc := &tg.Document{
+		ID:         42,
+		AccessHash: 4242,
+		DCID:       4,
+		MimeType:   "video/mp4",
+		Thumbs: []tg.PhotoSizeClass{
+			&tg.PhotoSize{Type: "m", W: 320, H: 180, Size: 6000},
+			&tg.PhotoSize{Type: "y", W: 1280, H: 720, Size: 80000},
+		},
+	}
+	media, err := mediaFromMessage(newMessage(&tg.MessageMediaDocument{Document: doc}))
+	if err != nil {
+		t.Fatalf("mediaFromMessage 报错: %v", err)
+	}
+	if media.Preview == nil || media.Preview.SizeType != "y" {
+		t.Fatalf("Preview = %+v，期望 y", media.Preview)
+	}
+	if media.Preview.Kind != ThumbKindDocument {
+		t.Errorf("Preview.Kind = %q", media.Preview.Kind)
+	}
+}
+
+// TestPickPreviewSizeFallback 没有优先级尺寸时退到面积最大的一张。
+func TestPickPreviewSizeFallback(t *testing.T) {
+	sizeType, width, height := pickPreviewSize([]tg.PhotoSizeClass{
+		&tg.PhotoSize{Type: "q", W: 200, H: 100, Size: 1000},
+		&tg.PhotoSize{Type: "z", W: 300, H: 300, Size: 5000},
+	})
+	if sizeType != "z" || width != 300 || height != 300 {
+		t.Fatalf("pickPreviewSize = (%q, %d, %d)", sizeType, width, height)
 	}
 }
 

@@ -21,15 +21,19 @@ var (
 //
 // 只暴露展示需要的字段：session 路径等本地信息不外传。
 type Account struct {
-	ID        int64  `json:"id"`
-	Kind      string `json:"kind"` // mtproto | botapi
+	ID   int64  `json:"id"`
+	Kind string `json:"kind"` // mtproto | botapi
+	// Source 是账号来源：manual（手动登录）| desktop（桌面导入）| bot；旧数据省略。
+	Source    string `json:"source,omitempty"`
 	Name      string `json:"name"`
 	Username  string `json:"username,omitempty"`
 	Phone     string `json:"phone,omitempty"`
 	State     string `json:"state"` // unauthed | authed | error
 	LastError string `json:"last_error,omitempty"`
-	CreatedAt int64  `json:"created_at"` // Unix 秒
-	Current   bool   `json:"current"`    // 是否为当前选中账号
+	// TelegramID 是 Telegram 的 user.id；未绑定或未联网时省略。
+	TelegramID int64 `json:"telegram_id,omitempty"`
+	CreatedAt  int64 `json:"created_at"` // Unix 秒
+	Current    bool  `json:"current"`    // 是否为当前选中账号
 }
 
 // AccountDetail 是 GET /api/v1/accounts/{id} 的响应：在列表项之上补充
@@ -102,6 +106,15 @@ func (s *Server) handleAccountList(w http.ResponseWriter, r *http.Request) {
 type SelectAccountResponse struct {
 	OK               bool  `json:"ok"`
 	CurrentAccountID int64 `json:"current_account_id"`
+}
+
+// AccountLogoutResult 是 POST /api/v1/accounts/{id}/logout 的响应。
+type AccountLogoutResult struct {
+	OK bool `json:"ok"`
+	// Revoked 表示 Telegram 端是否成功注销；网络失败时本地仍会删除。
+	Revoked bool `json:"revoked"`
+	// RemovedSession 表示本地 session 文件是否由删除流程清理。
+	RemovedSession bool `json:"removed_session"`
 }
 
 // handleAccountSelect 处理 POST /api/v1/accounts/{id}/select：

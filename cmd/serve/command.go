@@ -1,8 +1,11 @@
-package cmd
+// Package serve 提供 serve 子命令，也是不带子命令时的默认行为。
+//
+// 命令只负责进程生命周期、参数校验与启动横幅；HTTP 路由与处理在
+// internal/server，这里把 internal 各层的实现接到 server.Config 上。
+package serve
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -12,9 +15,9 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/ma6254/tg_down/internal/build"
-	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/utils"
 )
@@ -22,38 +25,78 @@ import (
 // serveShutdownTimeout 是收到退出信号后等待在途请求结束的上限。
 const serveShutdownTimeout = 10 * time.Second
 
-func init() {
-	// --listen 只属于 serve：它决定 HTTP 监听地址，其它子命令用不到。
-	opts.bindServe(serveCmd.Flags())
+// Options 是 serve 启动需要的参数快照，由根命令在参数解析完成后提供。
+type Options struct {
+	Listen         string // HTTP 监听地址
+	AuthToken      string // 非回环监听时的 Bearer token
+	DownloadDir    string // 下载根目录
+	MaxConcurrency int    // 并发下载数
+	LogLevel       string // debug / info / warn / error
+	AuthMode       string // 鉴权状态的可读描述，供启动横幅使用
 }
 
-// serveCmd 启动常驻服务，也是不带子命令时的默认行为。
-var serveCmd = &cobra.Command{
-	Use:   "serve",
-	Short: "启动常驻 HTTP 服务（默认子命令）",
-	Long: `启动常驻 HTTP 服务，同时提供 /api 接口与 Web 界面。
+// Deps 是 serve 依赖根命令提供的能力。
+//
+// 一律用函数而不是值：参数要等 Execute 时才解析完，serve 启动前才能读到最终值。
+type Deps struct {
+	// BindListen 在 serve 自己的命令行上注册 --listen。
+	// 根命令另注册一份隐藏的 --listen：不带子命令时同样要能指定监听地址。
+	BindListen func(*pflag.FlagSet)
+	// WorkDir 返回启动前要切换的工作目录，空表示不切换。
+	WorkDir func() string
+	// Validate 校验并归一化根命令参数，必须在启动服务前调用。
+	Validate func() error
+	// Options 返回参数快照，供侦听、下载管理器与启动横幅使用。
+	Options func() Options
+}
+
+// command 持有注入的依赖，用于构造命令并执行。
+type command struct {
+	deps Deps
+}
+
+// NewCommand 返回 serve 子命令，由根命令挂载。
+func NewCommand(deps Deps) *cobra.Command {
+	c := &command{deps: deps}
+	cmd := &cobra.Command{
+		Use:   "serve",
+		Short: "启动常驻 HTTP 服务（默认子命令）",
+		Long: `启动常驻 HTTP 服务，同时提供 /api 接口与 Web 界面。
 
 服务默认只监听 127.0.0.1:22429；绑定到非回环地址时必须提供
 --auth-token，否则拒绝启动。`,
-	Args: cobra.NoArgs,
-	RunE: runServe,
+		Args: cobra.NoArgs,
+		RunE: c.run,
+	}
+	deps.BindListen(cmd.Flags())
+	return cmd
 }
 
-// runServe 完成工作目录切换、参数校验，然后侦听并阻塞到进程被要求退出。
-func runServe(cmd *cobra.Command, _ []string) error {
-	if workDir != "" {
-		if err := os.Chdir(workDir); err != nil {
-			return fmt.Errorf("切换工作目录 %q: %w", workDir, err)
+// run 完成工作目录切换、参数校验，然后侦听并阻塞到进程被要求退出。
+func (c *command) run(cmd *cobra.Command, _ []string) error {
+	if dir := c.deps.WorkDir(); dir != "" {
+		if err := os.Chdir(dir); err != nil {
+			return fmt.Errorf("切换工作目录 %q: %w", dir, err)
 		}
 	}
-	if err := opts.validate(); err != nil {
+	if err := c.deps.Validate(); err != nil {
 		return err
 	}
+	opts := c.deps.Options()
 
 	// 先完成建表/迁移再监听：并发首个请求各自 OpenDatabase 会同时 AutoMigrate，
 	// 提前初始化可以避免迁移竞态，也能让数据库错误在启动阶段暴露。
-	if err := prepareDatabase(); err != nil {
+	if err := utils.PrepareDatabase(); err != nil {
 		return err
+	}
+
+	// SSE 广播器：下载管理器往这里发事件，/api/v1/events 从这里订阅。
+	hub := server.NewEventHub()
+
+	// 下载任务管理器：worker 在后台执行队列，状态落库，重启后残留任务标记为暂停。
+	mgr := newDownloadManager(opts.DownloadDir, opts.MaxConcurrency, hub)
+	if err := mgr.start(); err != nil {
+		return fmt.Errorf("初始化下载任务: %w", err)
 	}
 
 	// 先显式侦听再启动服务：端口占用等错误在启动阶段就能给出明确提示，
@@ -77,43 +120,40 @@ func runServe(cmd *cobra.Command, _ []string) error {
 		GetAccount: getAccount,
 		// 在线资料：account info <id> --live 的 HTTP 版（联网查询，不落库）。
 		GetAccountLive: getAccountLive,
+		// 账号头像：磁盘缓存，过期后联网刷新。
+		GetAccountAvatar: getAccountAvatar,
+		// 退出登录：吊销 Telegram session 并删除本地记录。
+		LogoutAccount: logoutAccount,
+		// 删除账号：只删本地记录，不吊销 Telegram 会话（桌面导入账号用）。
+		DeleteAccount: deleteAccount,
 		// 链接解析：download -u <链接> 的 HTTP 版（联网查询，不落库）。
 		PreviewLinks: previewLinks,
-		// 媒体缩略图：解析结果里的 token 换取小图。
-		GetMediaThumbnail: getMediaThumbnail,
 		// 系统配置：config list / set / unset 的 HTTP 版。
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,
+		// 下载任务：创建后由后台 worker 执行，进度通过 SSE 推送。
+		CreateDownloads: mgr.create,
+		ListDownloads:   mgr.list,
+		GetDownload:     mgr.get,
+		ControlDownload: mgr.control,
+		DeleteDownload: func(_ context.Context, id uint, deleteFile bool) error {
+			return mgr.remove(id, deleteFile)
+		},
+		// 实时事件与任务缩略图：前者由 hub 直接提供，后者按任务按需生成。
+		EventHub:             hub,
+		GetDownloadThumbnail: mgr.thumbnail,
 		// 前端接入方式随 Web 构建产物一起接入（proxy / dir / embed）。
 	})
 
 	addr := ln.Addr().String()
-	printStartupInfo(addr)
-	return serveUntilSignal(cmd.Context(), srv, ln, addr)
-}
-
-// prepareDatabase 在开始监听前完成建表与迁移。
-func prepareDatabase() error {
-	db, err := utils.OpenDatabase()
-	if err != nil {
-		return fmt.Errorf("初始化数据库: %w", err)
-	}
-	if err := config.SyncTypes(db); err != nil {
-		_ = db.Close()
-		return fmt.Errorf("同步配置类型: %w", err)
-	}
-	if err := config.SeedDefaults(db); err != nil {
-		_ = db.Close()
-		return fmt.Errorf("初始化默认配置: %w", err)
-	}
-	if err := db.Close(); err != nil {
-		return fmt.Errorf("关闭数据库: %w", err)
-	}
-	return nil
+	printStartupInfo(addr, opts)
+	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.stop)
 }
 
 // serveUntilSignal 运行 HTTP 服务，收到 Ctrl+C 或 SIGTERM 后优雅关闭。
-func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, addr string) error {
+//
+// stops 是额外需要关闭的后台组件（如下载管理器），在 HTTP 优雅关闭前调用。
+func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, addr string, stops ...func(context.Context)) error {
 	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -129,6 +169,9 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, 
 	fmt.Printf("\n正在关闭 %s ...\n", addr)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
 	defer cancel()
+	for _, stopFn := range stops {
+		stopFn(shutdownCtx)
+	}
 	if err := srv.Stop(shutdownCtx); err != nil {
 		return fmt.Errorf("优雅关闭超时（%s）: %w", serveShutdownTimeout, err)
 	}
@@ -136,14 +179,9 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, 
 	return nil
 }
 
-// wsaEADDRINUSE 是 Windows 的“端口已占用”错误码（10048）。
-// Go 只把 syscall.EADDRINUSE 映射为应用错误，不覆盖 WSA 错误码，
-// 所以这里单独判断，兼顾 Unix 与 Windows。
-const wsaEADDRINUSE = 10048
-
 // listenError 把底层网络错误翻译成可操作的提示。
 func listenError(addr string, err error) error {
-	if isAddrInUse(err) {
+	if utils.IsAddrInUse(err) {
 		return fmt.Errorf("监听 %s 失败：端口已被占用（Windows 可用 netstat -ano | findstr :端口 查看占用进程）: %w", addr, err)
 	}
 	if msg := strings.ToLower(err.Error()); strings.Contains(msg, "forbidden") || strings.Contains(msg, "permission") {
@@ -152,18 +190,8 @@ func listenError(addr string, err error) error {
 	return fmt.Errorf("监听 %s 失败: %w", addr, err)
 }
 
-// isAddrInUse 同时识别 Unix 的 EADDRINUSE 与 Windows 的 WSAEADDRINUSE。
-func isAddrInUse(err error) bool {
-	var errno syscall.Errno
-	if errors.As(err, &errno) && (int(errno) == wsaEADDRINUSE || errors.Is(errno, syscall.EADDRINUSE)) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	return strings.Contains(msg, "in use") || strings.Contains(msg, "only one usage")
-}
-
 // printStartupInfo 打印生效配置与真实监听地址，便于确认参数是否按预期覆盖。
-func printStartupInfo(addr string) {
+func printStartupInfo(addr string, opts Options) {
 	fmt.Printf(`
   ┌──────────────────────────────────────────────┐
   │   tg_down · Telegram 下载工具                 │
@@ -184,7 +212,7 @@ func printStartupInfo(addr string) {
 		addr,
 		opts.DownloadDir,
 		opts.MaxConcurrency,
-		opts.authMode(),
+		opts.AuthMode,
 		opts.LogLevel,
 	)
 }

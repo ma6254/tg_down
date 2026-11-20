@@ -40,6 +40,20 @@ type PreviewChat struct {
 	ID       int64  `json:"id"`
 	Title    string `json:"title"`
 	Username string `json:"username,omitempty"`
+	// Broadcast 表示广播频道（kind=channel 时用来区分频道与超级群）。
+	Broadcast bool `json:"broadcast,omitempty"`
+	// Self 表示用户会话就是当前账号，即收藏夹（Saved Messages）。
+	Self bool `json:"self,omitempty"`
+	// AvatarURL 是群聊头像（token 地址，会过期）；私聊/频道通常省略。
+	AvatarURL string `json:"avatar_url,omitempty"`
+}
+
+// PreviewSender 是群聊消息的发送者。
+type PreviewSender struct {
+	ID        int64  `json:"id"`
+	Name      string `json:"name"`
+	Username  string `json:"username,omitempty"`
+	AvatarURL string `json:"avatar_url,omitempty"`
 }
 
 // PreviewLink 是消息正文里的一段文字链接（text_link / url 实体）。
@@ -48,11 +62,31 @@ type PreviewLink struct {
 	URL  string `json:"url"`
 }
 
+// PreviewEntity 是消息正文的富文本标注，字段含义与 Bot API 的 MessageEntity 一致。
+//
+// Offset/Length 以 UTF-16 码元计；只有对应类型才会带 URL、UserID 等附加字段。
+type PreviewEntity struct {
+	Type       string `json:"type"`
+	Offset     int    `json:"offset"`
+	Length     int    `json:"length"`
+	URL        string `json:"url,omitempty"`         // text_link
+	UserID     int64  `json:"user_id,omitempty"`     // text_mention
+	Language   string `json:"language,omitempty"`    // pre
+	DocumentID int64  `json:"document_id,omitempty"` // custom_emoji
+	Collapsed  bool   `json:"collapsed,omitempty"`   // blockquote（可折叠）
+	Date       int    `json:"date,omitempty"`        // date_time
+	DateFormat string `json:"date_format,omitempty"` // date_time
+}
+
 // PreviewMedia 是消息里的可下载媒体。
 type PreviewMedia struct {
-	Kind         string `json:"kind"` // photo | video | audio | document
-	FileName     string `json:"file_name"`
-	Size         int64  `json:"size"`
+	Kind     string `json:"kind"` // photo | video | audio | document
+	FileName string `json:"file_name"`
+	Size     int64  `json:"size"`
+	// MessageID 是这条媒体所在的消息；相册里每张图对应不同消息。
+	MessageID int `json:"message_id,omitempty"`
+	// Link 是这条消息的链接（相册成员可单独入队）；无法拼出时省略。
+	Link         string `json:"link,omitempty"`
 	MIME         string `json:"mime,omitempty"`
 	Duration     int    `json:"duration,omitempty"` // 秒
 	Width        int    `json:"width,omitempty"`
@@ -62,18 +96,26 @@ type PreviewMedia struct {
 	MaxSize      int64  `json:"max_size"` // 当前账号的单文件上限
 	// ThumbnailURL 是列表封面地址；没有可用缩略图时省略。
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
+	// PreviewURL 是正文大图地址（比封面更大）；没有时前端退回 ThumbnailURL。
+	PreviewURL string `json:"preview_url,omitempty"`
 }
 
 // PreviewItem 是一条链接的解析结果；Error 非空时其它字段无意义。
 type PreviewItem struct {
-	Link      string        `json:"link"`
-	Expanded  bool          `json:"expanded,omitempty"` // 来自正文链接展开
-	MessageID int           `json:"message_id,omitempty"`
-	Chat      *PreviewChat  `json:"chat,omitempty"`
-	Text      string        `json:"text,omitempty"`
-	Links     []PreviewLink `json:"links,omitempty"`
-	Media     *PreviewMedia `json:"media,omitempty"` // 纯文本消息为空
-	Error     string        `json:"error,omitempty"`
+	Link      string       `json:"link"`
+	Expanded  bool         `json:"expanded,omitempty"` // 来自正文链接展开
+	MessageID int          `json:"message_id,omitempty"`
+	Chat      *PreviewChat `json:"chat,omitempty"`
+	// Sender 是群聊消息的发送者；私聊/频道为空。
+	Sender *PreviewSender `json:"sender,omitempty"`
+	Text   string         `json:"text,omitempty"`
+	Links  []PreviewLink  `json:"links,omitempty"`
+	// Entities 是正文的富文本标注；前端据此渲染粗体、代码、引用等格式。
+	Entities []PreviewEntity `json:"entities,omitempty"`
+	Media    *PreviewMedia   `json:"media,omitempty"` // 纯文本消息为空
+	// Medias 是相册的全部媒体（按消息 ID 升序）；非相册消息为空，只用 Media。
+	Medias []PreviewMedia `json:"medias,omitempty"`
+	Error  string         `json:"error,omitempty"`
 }
 
 // PreviewSummary 汇总一次解析的结果。

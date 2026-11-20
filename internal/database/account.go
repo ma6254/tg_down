@@ -15,6 +15,13 @@ const (
 	AccountStateAuthed   = "authed"
 	AccountStateUnAuthed = "unauthed"
 	AccountStateError    = "error"
+
+	// AccountSourceManual 表示手机号/验证码手动登录。
+	AccountSourceManual = "manual"
+	// AccountSourceDesktop 表示从 Telegram Desktop 的 tdata 探测导入。
+	AccountSourceDesktop = "desktop"
+	// AccountSourceBot 表示 Bot token 接入（预留）。
+	AccountSourceBot = "bot"
 )
 
 // Account 是本地保存的 Telegram 账号。
@@ -22,16 +29,31 @@ const (
 // SessionPath 指向 session 文件（mtproto）或留空（botapi）；
 // token 等敏感字段不在这里明文存储，后续按需扩展。
 type Account struct {
-	ID          int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	Kind        string    `gorm:"size:16;index;not null" json:"kind"`
-	Name        string    `gorm:"size:120" json:"name"`
-	Phone       string    `gorm:"size:32;index" json:"phone"`
-	Username    string    `gorm:"size:64" json:"username"`
-	SessionPath string    `gorm:"size:255" json:"session_path"`
-	State       string    `gorm:"size:16;index" json:"state"`
-	LastError   string    `gorm:"type:text" json:"last_error"`
-	CreatedAt   time.Time `gorm:"index" json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID   int64  `gorm:"primaryKey;autoIncrement" json:"id"`
+	Kind string `gorm:"size:16;index;not null" json:"kind"`
+	// Source 记录账号来源：manual（手动登录）/ desktop（桌面导入）/ bot。
+	// 旧数据为空，前端显示为“未记录”。
+	Source      string `gorm:"size:16;index" json:"source"`
+	Name        string `gorm:"size:120" json:"name"`
+	Phone       string `gorm:"size:32;index" json:"phone"`
+	Username    string `gorm:"size:64" json:"username"`
+	SessionPath string `gorm:"size:255" json:"session_path"`
+	State       string `gorm:"size:16;index" json:"state"`
+	LastError   string `gorm:"type:text" json:"last_error"`
+	// TelegramID 是 Telegram 的 user.id，跨手机号/用户名变化保持不变。
+	// 用指针是为了让旧记录保持 NULL：SQLite 的唯一索引允许多个 NULL，
+	// 但只允许一个 0，因此不能直接用零值表示"未绑定"。
+	TelegramID *int64    `gorm:"column:tg_user_id;uniqueIndex" json:"-"`
+	CreatedAt  time.Time `gorm:"index" json:"created_at"`
+	UpdatedAt  time.Time `json:"updated_at"`
+}
+
+// TelegramIDValue 返回绑定的 Telegram 用户 ID；未绑定时为 0。
+func (a Account) TelegramIDValue() int64 {
+	if a.TelegramID == nil {
+		return 0
+	}
+	return *a.TelegramID
 }
 
 // TableName 指定表名。
@@ -80,6 +102,15 @@ func (d *DB) FindAccountByPhone(phone string) (*Account, error) {
 func (d *DB) FindAccountBySessionPath(path string) (*Account, error) {
 	var item Account
 	if err := d.DB.Where("session_path = ?", path).First(&item).Error; err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+// FindAccountByTelegramID 按 Telegram user.id 查询账号；未绑定时返回 gorm.ErrRecordNotFound。
+func (d *DB) FindAccountByTelegramID(telegramID int64) (*Account, error) {
+	var item Account
+	if err := d.DB.Where("tg_user_id = ?", telegramID).First(&item).Error; err != nil {
 		return nil, err
 	}
 	return &item, nil

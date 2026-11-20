@@ -175,7 +175,7 @@ func TestImportDesktop(t *testing.T) {
 	result := &mtproto.DesktopProbeResult{
 		Accounts: []mtproto.DesktopAccount{
 			{
-				Account: &mtproto.Account{Phone: "+8613800000000", Username: "alice", FirstName: "Alice"},
+				Account: &mtproto.Account{ID: 555, Phone: "+8613800000000", Username: "alice", FirstName: "Alice"},
 				Session: &session.Data{DC: 2, AuthKey: make([]byte, 256)},
 			},
 		},
@@ -191,6 +191,16 @@ func TestImportDesktop(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(sessionDir, "mtproto-8613800000000.json")); err != nil {
 		t.Fatalf("session 文件未生成: %v", err)
 	}
+	rows, err := svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 1 || rows[0].TelegramIDValue() != 555 {
+		t.Fatalf("导入后账号 = %+v，期望 TelegramID 555", rows)
+	}
+	if rows[0].Source != database.AccountSourceDesktop {
+		t.Errorf("导入来源 = %q，期望 desktop", rows[0].Source)
+	}
 
 	// 再导入一次：文件已存在，只更新记录。
 	out, err = svc.ImportDesktop(sessionDir, result)
@@ -199,5 +209,133 @@ func TestImportDesktop(t *testing.T) {
 	}
 	if out.Imported != 0 || out.Skipped != 1 {
 		t.Fatalf("第二次结果异常: %+v", out)
+	}
+}
+
+// TestRecordByTelegramID 确认换绑手机号（session 路径变化）仍复用同一账号。
+func TestRecordByTelegramID(t *testing.T) {
+	svc := newTestService(t)
+
+	first, err := svc.Record(RecordInput{
+		Kind:        database.AccountKindMTProto,
+		Name:        "主号",
+		Phone:       "+8613800000001",
+		TelegramID:  777,
+		SessionPath: "./sessions/old.json",
+	})
+	if err != nil {
+		t.Fatalf("登记失败: %v", err)
+	}
+
+	second, err := svc.Record(RecordInput{
+		Kind:        database.AccountKindMTProto,
+		Name:        "主号",
+		Phone:       "+8613800000002",
+		TelegramID:  777,
+		SessionPath: "./sessions/new.json",
+	})
+	if err != nil {
+		t.Fatalf("再次登记失败: %v", err)
+	}
+	if second.ID != first.ID {
+		t.Errorf("应按 TelegramID 复用记录：%d != %d", second.ID, first.ID)
+	}
+	if second.SessionPath != "./sessions/new.json" {
+		t.Errorf("SessionPath 未跟随最新登录: %q", second.SessionPath)
+	}
+	if second.TelegramIDValue() != 777 {
+		t.Errorf("TelegramID = %d，期望 777", second.TelegramIDValue())
+	}
+
+	list, err := svc.List()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(list) != 1 {
+		t.Errorf("账号数量 = %d，期望 1", len(list))
+	}
+}
+
+// TestRecordSource 确认来源会写入，且后续未提供来源的登记不会把它清空。
+func TestRecordSource(t *testing.T) {
+	svc := newTestService(t)
+
+	in := RecordInput{
+		Kind:        database.AccountKindMTProto,
+		Source:      database.AccountSourceManual,
+		Name:        "主号",
+		SessionPath: "./sessions/a.json",
+	}
+	row, err := svc.Record(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Source != database.AccountSourceManual {
+		t.Fatalf("Source = %q", row.Source)
+	}
+
+	in.Source = ""
+	row, err = svc.Record(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Source != database.AccountSourceManual {
+		t.Errorf("未提供来源时不应清空，实际 %q", row.Source)
+	}
+
+	in.Source = database.AccountSourceDesktop
+	row, err = svc.Record(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.Source != database.AccountSourceDesktop {
+		t.Errorf("Source = %q，期望 desktop", row.Source)
+	}
+}
+// TestBindTelegramID 确认联网拿到的 user.id 会补写到账号记录。
+func TestBindTelegramID(t *testing.T) {
+	svc := newTestService(t)
+
+	row, err := svc.Record(RecordInput{
+		Kind:        database.AccountKindMTProto,
+		Name:        "主号",
+		SessionPath: "./sessions/a.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if row.TelegramIDValue() != 0 {
+		t.Fatal("初始不应有 TelegramID")
+	}
+
+	if err := svc.BindTelegramID(row.ID, 888); err != nil {
+		t.Fatalf("绑定失败: %v", err)
+	}
+	got, err := svc.db.GetAccount(row.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TelegramIDValue() != 888 {
+		t.Errorf("TelegramID = %d，期望 888", got.TelegramIDValue())
+	}
+
+	// 已被别的账号占用时不覆盖。
+	other, err := svc.Record(RecordInput{
+		Kind:        database.AccountKindMTProto,
+		Name:        "另一个",
+		SessionPath: "./sessions/b.json",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.BindTelegramID(other.ID, 888); err != nil {
+		t.Fatalf("冲突绑定不应报错: %v", err)
+	}
+	other, err = svc.db.GetAccount(other.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.TelegramIDValue() != 0 {
+		t.Errorf("冲突时不应写入，实际 %d", other.TelegramIDValue())
 	}
 }

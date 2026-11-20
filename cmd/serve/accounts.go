@@ -1,4 +1,4 @@
-package cmd
+package serve
 
 import (
 	"context"
@@ -43,15 +43,17 @@ func listAccounts(ctx context.Context) ([]server.Account, error) {
 	out := make([]server.Account, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, server.Account{
-			ID:        row.ID,
-			Kind:      row.Kind,
-			Name:      row.Name,
-			Username:  row.Username,
-			Phone:     row.Phone,
-			State:     row.State,
-			LastError: row.LastError,
-			CreatedAt: row.CreatedAt.Unix(),
-			Current:   hasCurrent && current == row.ID,
+			ID:         row.ID,
+			Kind:       row.Kind,
+			Source:     row.Source,
+			Name:       row.Name,
+			Username:   row.Username,
+			Phone:      row.Phone,
+			State:      row.State,
+			LastError:  row.LastError,
+			TelegramID: row.TelegramIDValue(),
+			CreatedAt:  row.CreatedAt.Unix(),
+			Current:    hasCurrent && current == row.ID,
 		})
 	}
 	return out, nil
@@ -122,17 +124,19 @@ func getAccount(ctx context.Context, id int64) (server.AccountDetail, error) {
 
 	detail := server.AccountDetail{
 		Account: server.Account{
-			ID:        account.ID,
-			Kind:      account.Kind,
-			Name:      account.Name,
-			Username:  account.Username,
-			Phone:     account.Phone,
-			State:     account.State,
-			LastError: account.LastError,
-			CreatedAt: account.CreatedAt.Unix(),
-			Current:   hasCurrent && current == account.ID,
+			ID:         account.ID,
+			Kind:       account.Kind,
+			Source:     account.Source,
+			Name:       account.Name,
+			Username:   account.Username,
+			Phone:      account.Phone,
+			State:      account.State,
+			LastError:  account.LastError,
+			TelegramID: account.TelegramIDValue(),
+			CreatedAt:  account.CreatedAt.Unix(),
+			Current:    hasCurrent && current == account.ID,
 		},
-		SessionPresent: sessionFileExists(account.SessionPath),
+		SessionPresent: utils.FileExists(account.SessionPath),
 	}
 	if !account.UpdatedAt.IsZero() {
 		detail.UpdatedAt = account.UpdatedAt.Unix()
@@ -164,7 +168,7 @@ func getAccountLive(ctx context.Context, id int64) (server.AccountLiveInfo, erro
 		return server.AccountLiveInfo{}, fmt.Errorf("查询账号 %d: %w", id, err)
 	}
 
-	if !sessionFileExists(account.SessionPath) {
+	if !utils.FileExists(account.SessionPath) {
 		return server.AccountLiveInfo{}, fmt.Errorf("%w: 账号 #%d 的 session 文件不存在，无法联网查询", server.ErrAccountNoSession, account.ID)
 	}
 
@@ -188,6 +192,11 @@ func getAccountLive(ctx context.Context, id int64) (server.AccountLiveInfo, erro
 			return server.AccountLiveInfo{}, err
 		}
 		return server.AccountLiveInfo{}, fmt.Errorf("%w: %v", server.ErrAccountLiveFailed, err)
+	}
+
+	// 联网拿到真实 user.id 后顺手绑定，后续去重不再依赖手机号/用户名。
+	if live.Account != nil && live.Account.ID > 0 {
+		_ = accountsvc.New(db).BindTelegramID(account.ID, live.Account.ID)
 	}
 
 	info := server.AccountLiveInfo{
@@ -217,14 +226,4 @@ func getAccountLive(ctx context.Context, id int64) (server.AccountLiveInfo, erro
 		}
 	}
 	return info, nil
-}
-
-// sessionFileExists 判断 session 路径是否指向一个存在的文件。
-func sessionFileExists(path string) bool {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return false
-	}
-	info, err := os.Stat(path)
-	return err == nil && !info.IsDir()
 }

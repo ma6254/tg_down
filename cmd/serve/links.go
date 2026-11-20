@@ -1,4 +1,4 @@
-package cmd
+package serve
 
 import (
 	"context"
@@ -75,7 +75,7 @@ func previewLinks(ctx context.Context, req server.PreviewRequest) (server.Previe
 		return server.PreviewResponse{}, fmt.Errorf("%w：账号 #%d 是 %s，按链接解析暂只支持 mtproto",
 			server.ErrNoCurrentAccount, id, account.Kind)
 	}
-	if !sessionFileExists(account.SessionPath) {
+	if !utils.FileExists(account.SessionPath) {
 		return server.PreviewResponse{}, fmt.Errorf("%w：账号 #%d 的 session 文件不存在，请重新登录",
 			server.ErrAccountNoSession, account.ID)
 	}
@@ -153,10 +153,26 @@ func buildPreviewItems(results []mtproto.LinkResult, expanded bool, session mtpr
 		item.MessageID = result.MessageID
 		item.Text = result.Text
 		item.Chat = &server.PreviewChat{
-			Kind:     string(result.Chat.Kind),
-			ID:       result.Chat.ID,
-			Title:    result.Chat.Title,
-			Username: result.Chat.Username,
+			Kind:      string(result.Chat.Kind),
+			ID:        result.Chat.ID,
+			Title:     result.Chat.Title,
+			Username:  result.Chat.Username,
+			Broadcast: result.Chat.Broadcast,
+			Self:      result.Chat.Self,
+		}
+		if result.ChatAvatar != nil {
+			item.Chat.AvatarURL = peerAvatarURL(session, result.ChatAvatar)
+		}
+		if result.Sender != nil {
+			sender := &server.PreviewSender{
+				ID:       result.Sender.Peer.ID,
+				Name:     result.Sender.Name,
+				Username: result.Sender.Username,
+			}
+			if result.Sender.Avatar != nil {
+				sender.AvatarURL = peerAvatarURL(session, result.Sender.Avatar)
+			}
+			item.Sender = sender
 		}
 		for _, messageLink := range result.Links {
 			item.Links = append(item.Links, server.PreviewLink{
@@ -164,28 +180,60 @@ func buildPreviewItems(results []mtproto.LinkResult, expanded bool, session mtpr
 				URL:  messageLink.URL,
 			})
 		}
+		for _, entity := range result.Entities {
+			item.Entities = append(item.Entities, server.PreviewEntity{
+				Type:       entity.Type,
+				Offset:     entity.Offset,
+				Length:     entity.Length,
+				URL:        entity.URL,
+				UserID:     entity.UserID,
+				Language:   entity.Language,
+				DocumentID: entity.DocumentID,
+				Collapsed:  entity.Collapsed,
+				Date:       entity.Date,
+				DateFormat: entity.DateFormat,
+			})
+		}
 		if media := result.Media; media != nil {
-			thumbnailURL := ""
-			if media.Thumb != nil {
-				thumbnailURL = "/api/v1/media/thumbnail/" + thumbnails.add(session, *media.Thumb)
-			}
-			item.Media = &server.PreviewMedia{
-				Kind:         string(media.Kind),
-				FileName:     media.FileName,
-				Size:         media.Size,
-				MIME:         media.MIME,
-				Duration:     media.Duration,
-				Width:        media.Width,
-				Height:       media.Height,
-				GroupedID:    media.GroupedID,
-				Downloadable: media.Downloadable,
-				MaxSize:      media.MaxSize,
-				ThumbnailURL: thumbnailURL,
+			item.Media = buildPreviewMedia(media, session)
+		}
+		if len(result.Medias) > 0 {
+			item.Medias = make([]server.PreviewMedia, 0, len(result.Medias))
+			for _, media := range result.Medias {
+				item.Medias = append(item.Medias, *buildPreviewMedia(media, session))
 			}
 		}
 		out = append(out, item)
 	}
 	return out
+}
+
+// buildPreviewMedia 把单条媒体转换成接口结构，并登记封面/大图的缩略图 token。
+func buildPreviewMedia(media *mtproto.Media, session mtproto.Session) *server.PreviewMedia {
+	thumbnailURL := ""
+	if media.Thumb != nil {
+		thumbnailURL = "/api/v1/media/thumbnail/" + server.RegisterThumbnail(session, *media.Thumb)
+	}
+	previewURL := ""
+	if media.Preview != nil {
+		previewURL = "/api/v1/media/thumbnail/" + server.RegisterThumbnail(session, *media.Preview)
+	}
+	return &server.PreviewMedia{
+		Kind:         string(media.Kind),
+		FileName:     media.FileName,
+		Size:         media.Size,
+		MessageID:    media.MessageID,
+		Link:         media.Link,
+		MIME:         media.MIME,
+		Duration:     media.Duration,
+		Width:        media.Width,
+		Height:       media.Height,
+		GroupedID:    media.GroupedID,
+		Downloadable: media.Downloadable,
+		MaxSize:      media.MaxSize,
+		ThumbnailURL: thumbnailURL,
+		PreviewURL:   previewURL,
+	}
 }
 
 // buildPreviewResponse 统计成功、失败、无媒体与展开数量。
