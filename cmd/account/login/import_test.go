@@ -13,13 +13,8 @@ import (
 // TestImportDesktopAccounts 确认探测结果会写入 session 文件与数据库，
 // 且重复导入不会覆盖已有 session。
 func TestImportDesktopAccounts(t *testing.T) {
-	t.Setenv("TG_DOWN_HOME", t.TempDir())
-
-	sessionDir := t.TempDir()
-	lo := &loginOptions{
-		Kind:       accountKindMTProto,
-		SessionDir: sessionDir,
-	}
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
 
 	result := &mtproto.DesktopProbeResult{
 		TDataPath: `C:\tdata`,
@@ -37,7 +32,7 @@ func TestImportDesktopAccounts(t *testing.T) {
 		},
 	}
 
-	imported, skipped, err := importDesktopAccounts(lo, result)
+	imported, skipped, err := importDesktopAccounts(result)
 	if err != nil {
 		t.Fatalf("导入失败: %v", err)
 	}
@@ -45,7 +40,7 @@ func TestImportDesktopAccounts(t *testing.T) {
 		t.Fatalf("imported=%d skipped=%d，期望 1/0", imported, skipped)
 	}
 
-	sessionPath := filepath.Join(sessionDir, "mtproto-8613800000000.json")
+	sessionPath := filepath.Join(home, "sessions", "mtproto-8613800000000.json")
 	if _, err := os.Stat(sessionPath); err != nil {
 		t.Fatalf("session 文件未生成: %v", err)
 	}
@@ -67,7 +62,7 @@ func TestImportDesktopAccounts(t *testing.T) {
 	db.Close()
 
 	// 再次导入：session 已存在，保留原文件但仍更新记录。
-	imported, skipped, err = importDesktopAccounts(lo, result)
+	imported, skipped, err = importDesktopAccounts(result)
 	if err != nil {
 		t.Fatalf("第二次导入失败: %v", err)
 	}
@@ -93,7 +88,6 @@ func TestImportDesktopAccounts(t *testing.T) {
 func TestImportDesktopAccountsMissingSession(t *testing.T) {
 	t.Setenv("TG_DOWN_HOME", t.TempDir())
 
-	lo := &loginOptions{Kind: accountKindMTProto, SessionDir: t.TempDir()}
 	result := &mtproto.DesktopProbeResult{
 		Accounts: []mtproto.DesktopAccount{
 			{
@@ -103,7 +97,7 @@ func TestImportDesktopAccountsMissingSession(t *testing.T) {
 		},
 	}
 
-	if _, _, err := importDesktopAccounts(lo, result); err == nil {
+	if _, _, err := importDesktopAccounts(result); err == nil {
 		t.Fatal("缺少 session 数据应报错")
 	}
 }

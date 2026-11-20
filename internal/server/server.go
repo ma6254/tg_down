@@ -121,13 +121,24 @@ type Server struct {
 	mux       *http.ServeMux
 	startTime time.Time
 
+	// connCtx 是所有请求 context 的根：Stop 时统一取消，
+	// 让 /api/v1/events 这类长连接立即退出，Shutdown 不必干等超时。
+	connCtx    context.Context
+	connCancel context.CancelFunc
+
 	mu   sync.Mutex
 	http *http.Server
 }
 
 // New 构造 Server 并注册路由。
 func New(cfg Config) *Server {
-	srv := &Server{cfg: cfg, startTime: time.Now()}
+	connCtx, connCancel := context.WithCancel(context.Background())
+	srv := &Server{
+		cfg:        cfg,
+		startTime:  time.Now(),
+		connCtx:    connCtx,
+		connCancel: connCancel,
+	}
 	srv.mux = srv.routes()
 	return srv
 }
@@ -153,7 +164,9 @@ func (s *Server) Run() error {
 // 这样端口占用等错误能在启动阶段就被翻译成可读提示。
 func (s *Server) Serve(ln net.Listener) error {
 	httpSrv := &http.Server{
-		Handler:           s.Handler(),
+		Handler: s.Handler(),
+		// 请求 context 统一挂在 connCtx 下：Stop 取消后，SSE 事件流会立即返回。
+		BaseContext:       func(net.Listener) context.Context { return s.connCtx },
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
 		IdleTimeout:       2 * time.Minute,
@@ -171,7 +184,14 @@ func (s *Server) Serve(ln net.Listener) error {
 }
 
 // Stop 优雅关闭 HTTP 服务，等待在途请求结束；超时由调用方的 context 控制。
+//
+// 先取消所有请求的 context：/api/v1/events 这类 SSE 长连接只在 context 结束时
+// 退出，否则 Shutdown 会一直等到超时（表现为 Ctrl+C 后报「优雅关闭超时」）。
 func (s *Server) Stop(ctx context.Context) error {
+	if s.connCancel != nil {
+		s.connCancel()
+	}
+
 	s.mu.Lock()
 	httpSrv := s.http
 	s.mu.Unlock()

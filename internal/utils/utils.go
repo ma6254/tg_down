@@ -7,9 +7,11 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"gorm.io/gorm"
@@ -22,6 +24,9 @@ import (
 
 // DefaultNetworkTimeout 是涉及网络的只读操作（探测等）的默认超时。
 const DefaultNetworkTimeout = 30 * time.Second
+
+// normalizeSessionPathsOnce 让存量 session_path 的规范化每个进程只做一次。
+var normalizeSessionPathsOnce sync.Once
 
 // OpenDatabase 打开运行数据目录下的 SQLite，并确保表结构已建好。
 //
@@ -39,6 +44,12 @@ func OpenDatabase() (*database.DB, error) {
 		_ = db.Close()
 		return nil, sqliteOpenError(path, fmt.Errorf("初始化数据库 %s: %w", path, err))
 	}
+	// 历史数据里的 session_path 可能是绝对路径，开库后统一改成相对数据目录。
+	normalizeSessionPathsOnce.Do(func() {
+		if err := db.NormalizeSessionPaths(); err != nil {
+			log.Printf("规范化 session_path 失败（继续使用原值）: %v", err)
+		}
+	})
 	return db, nil
 }
 

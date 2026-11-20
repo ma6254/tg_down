@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"github.com/ma6254/tg_down/cmd/account/internal/store"
+	"github.com/ma6254/tg_down/internal/appdir"
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
@@ -47,7 +48,7 @@ func runDesktopProbe(ctx context.Context, lo *loginOptions, proxy string) error 
 	}
 	printDesktopProbe(result)
 
-	imported, skipped, err := importDesktopAccounts(lo, result)
+	imported, skipped, err := importDesktopAccounts(result)
 	if err != nil {
 		return err
 	}
@@ -75,8 +76,9 @@ func runDesktopProbe(ctx context.Context, lo *loginOptions, proxy string) error 
 // importDesktopAccounts 把探测成功的账号写入 session 文件与数据库。
 //
 // session 文件已存在时保留原文件，避免覆盖本工具已登录的授权；账号记录仍会更新。
-func importDesktopAccounts(lo *loginOptions, result *mtproto.DesktopProbeResult) (imported, skipped int, err error) {
-	dir, err := lo.sessionDir()
+// 文件位置固定为数据目录下的 sessions，与登录保持一致。
+func importDesktopAccounts(result *mtproto.DesktopProbeResult) (imported, skipped int, err error) {
+	dir, err := appdir.SessionsDir()
 	if err != nil {
 		return 0, 0, err
 	}

@@ -25,6 +25,40 @@ func TestPickTaskMedia(t *testing.T) {
 	}
 }
 
+// TestSelectMedias 确认 single 模式只取目标消息，默认仍展开相册。
+func TestSelectMedias(t *testing.T) {
+	first := &mtproto.Media{MessageID: 10, FileName: "a.jpg"}
+	second := &mtproto.Media{MessageID: 11, FileName: "b.jpg"}
+	album := &mtproto.LinkResult{
+		MessageID: 10,
+		Media:     first,
+		Medias:    []*mtproto.Media{first, second},
+	}
+
+	single := selectMedias(album, true)
+	if len(single) != 1 || single[0] != first {
+		t.Errorf("single = %+v，期望只含 a.jpg", single)
+	}
+	all := selectMedias(album, false)
+	if len(all) != 2 {
+		t.Errorf("默认应展开相册，实际 %+v", all)
+	}
+
+	// 非相册消息：两种模式都只有主媒体。
+	solo := &mtproto.LinkResult{MessageID: 7, Media: &mtproto.Media{MessageID: 7}}
+	if got := selectMedias(solo, true); len(got) != 1 {
+		t.Errorf("单条消息 single = %+v", got)
+	}
+	if got := selectMedias(solo, false); len(got) != 1 {
+		t.Errorf("单条消息默认 = %+v", got)
+	}
+
+	// 没有媒体时返回 nil。
+	if got := selectMedias(&mtproto.LinkResult{}, true); got != nil {
+		t.Errorf("没有媒体时应返回 nil，实际 %+v", got)
+	}
+}
+
 // TestSnapshotTerminalStatusWins 确认终态不会被内存进度覆盖成 running。
 //
 // 完成时先落库 done、后注销 run；如果 snapshot 无条件用 run 覆盖，

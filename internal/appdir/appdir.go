@@ -74,3 +74,68 @@ func DBPath() (string, error) {
 	}
 	return filepath.Join(dir, "data.db"), nil
 }
+
+// RelSessionPath 把 session 文件的绝对路径转成相对数据目录的路径（存库用）。
+//
+// 统一用 / 分隔，数据目录整体搬走（换盘、U 盘、同步目录）后路径仍然有效；
+// 文件不在数据目录内时保留绝对路径，避免出现一串 ../。
+func RelSessionPath(path string) string {
+	value := strings.TrimSpace(path)
+	if value == "" {
+		return ""
+	}
+
+	clean := filepath.Clean(value)
+	if !filepath.IsAbs(clean) {
+		// 已经是相对路径：视为相对数据目录，只做分隔符归一。
+		return filepath.ToSlash(clean)
+	}
+
+	dir, err := DataDir()
+	if err != nil {
+		return filepath.ToSlash(clean)
+	}
+	absDir, err := filepath.Abs(dir)
+	if err != nil {
+		return filepath.ToSlash(clean)
+	}
+	absPath, err := filepath.Abs(clean)
+	if err != nil {
+		return filepath.ToSlash(clean)
+	}
+	rel, err := filepath.Rel(absDir, absPath)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return filepath.ToSlash(absPath)
+	}
+	return filepath.ToSlash(rel)
+}
+
+// AbsSessionPath 把数据库里的 session_path 还原成实际文件路径。
+//
+// 相对路径按数据目录解析；绝对路径（历史数据或数据目录外的文件）原样返回。
+// 兼容旧版本：旧数据目录布局下文件名相对工作目录（./sessions），当数据目录里
+// 找不到该文件时会退回到工作目录下查找。
+func AbsSessionPath(stored string) string {
+	value := strings.TrimSpace(stored)
+	if value == "" {
+		return ""
+	}
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+
+	native := filepath.FromSlash(value)
+	dir, err := DataDir()
+	if err != nil {
+		return native
+	}
+	candidate := filepath.Join(dir, native)
+	if _, statErr := os.Stat(candidate); statErr == nil {
+		return candidate
+	}
+	// 旧版本把 session 放在启动目录下的 sessions/，这里兜底兼容。
+	if _, statErr := os.Stat(native); statErr == nil {
+		return native
+	}
+	return candidate
+}

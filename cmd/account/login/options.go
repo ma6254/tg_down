@@ -44,8 +44,6 @@ type loginOptions struct {
 	APIID         int           // Telegram api_id
 	APIHash       string        // Telegram api_hash
 	App           string        // 内置应用名：desktop | custom
-	SessionDir    string        // session 文件目录
-	SessionPath   string        // 直接指定 session 文件，优先于目录推导
 	Probe         bool          // 探测本机 Telegram Desktop（tdata）
 	ProbeSession  bool          // 探测本工具自己的 session
 	TData         string        // Telegram Desktop 的 tdata 目录
@@ -56,7 +54,7 @@ type loginOptions struct {
 // newLoginOptions 返回默认值：默认走 MTProto + desktop 内置应用，
 // 环境变量里的 api 凭据会覆盖内置应用。
 //
-// SessionDir 留空表示用数据目录下的 sessions（见 sessionDir）。
+// session 文件固定放在数据目录下的 sessions，不再提供 --session-dir/--session。
 func newLoginOptions() *loginOptions {
 	apiID, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("TG_DOWN_API_ID")))
 	return &loginOptions{
@@ -79,8 +77,6 @@ func (o *loginOptions) bind(fs *pflag.FlagSet) {
 	fs.IntVar(&o.APIID, "api-id", o.APIID, "自备 Telegram api_id（my.telegram.org），也可用环境变量 TG_DOWN_API_ID")
 	fs.StringVar(&o.APIHash, "api-hash", o.APIHash, "自备 Telegram api_hash，也可用环境变量 TG_DOWN_API_HASH")
 	fs.StringVar(&o.App, "app", o.App, "内置应用：desktop（Telegram Desktop 凭据，零配置）或 custom（配合 --api-id/--api-hash）")
-	fs.StringVar(&o.SessionDir, "session-dir", o.SessionDir, "session 文件存放目录，默认 <数据目录>/sessions")
-	fs.StringVar(&o.SessionPath, "session", o.SessionPath, "直接指定 session 文件（优先于 --phone/--session-dir 推导）")
 	fs.BoolVar(&o.Probe, "probe", o.Probe, "探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录")
 	fs.BoolVar(&o.ProbeSession, "probe-session", o.ProbeSession, "探测本工具自己保存的 session，不登录")
 	fs.StringVar(&o.TData, "tdata", o.TData, "Telegram Desktop 的 tdata 目录，留空自动查找")
@@ -97,8 +93,6 @@ func (o *loginOptions) validate() error {
 	o.Password = strings.TrimSpace(o.Password)
 	o.APIHash = strings.TrimSpace(o.APIHash)
 	o.App = strings.ToLower(strings.TrimSpace(o.App))
-	o.SessionDir = strings.TrimSpace(o.SessionDir)
-	o.SessionPath = strings.TrimSpace(o.SessionPath)
 
 	switch o.Kind {
 	case accountKindMTProto:
@@ -110,9 +104,6 @@ func (o *loginOptions) validate() error {
 		if o.Probe {
 			if o.Code != "" || o.Password != "" {
 				return errors.New("--probe 只读取 Telegram Desktop 的授权，不需要 --code / --password")
-			}
-			if o.SessionPath != "" {
-				return errors.New("--probe 从 tdata 导入授权，不能用 --session 指定文件")
 			}
 			return nil
 		}
@@ -213,51 +204,31 @@ func (o *loginOptions) displayName() string {
 	return maskPhone(o.Phone)
 }
 
-// sessionDir 返回实际使用的 session 目录：--session-dir 优先，
-// 否则用数据目录下的 sessions（<TG_DOWN_HOME>/sessions）。
+// sessionsDir 返回固定的 session 目录：<数据目录>/sessions。
 //
-// 两条路径都会被解析成绝对路径：数据库里存的 session_path 不再依赖
-// 启动时的工作目录。解析结果写回 SessionDir，后续 sessionPath/导入都复用它。
-func (o *loginOptions) sessionDir() (string, error) {
-	if o.SessionDir == "" {
-		dir, err := appdir.SessionsDir()
-		if err != nil {
-			return "", err
-		}
-		o.SessionDir = dir
-		return dir, nil
-	}
-
-	abs, err := filepath.Abs(o.SessionDir)
-	if err != nil {
-		return "", fmt.Errorf("解析 session 目录 %s: %w", o.SessionDir, err)
-	}
-	o.SessionDir = abs
-	return abs, nil
+// 目录跟着 TG_DOWN_HOME 走，不提供命令行覆盖；登录与探测都只认这一处。
+func (o *loginOptions) sessionsDir() (string, error) {
+	return appdir.SessionsDir()
 }
 
 // sessionPath 按手机号生成 session 文件路径，便于同机多账号共存。
-func (o *loginOptions) sessionPath() string {
-	return filepath.Join(o.SessionDir, "mtproto-"+digitsOnly(o.Phone)+".json")
+func (o *loginOptions) sessionPath() (string, error) {
+	dir, err := o.sessionsDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "mtproto-"+digitsOnly(o.Phone)+".json"), nil
 }
 
 // resolveSessionPath 决定要读写的 session 文件：
-// --session 优先，其次是 --phone 推导，最后在目录里找唯一一个 session。
+// 有 --phone 按手机号推导，否则在数据目录的 sessions 里找唯一一个。
 func (o *loginOptions) resolveSessionPath() (string, error) {
-	if o.SessionPath != "" {
-		abs, err := filepath.Abs(o.SessionPath)
-		if err != nil {
-			return "", fmt.Errorf("解析 session 文件 %s: %w", o.SessionPath, err)
-		}
-		return abs, nil
-	}
-
-	dir, err := o.sessionDir()
+	dir, err := o.sessionsDir()
 	if err != nil {
 		return "", err
 	}
 	if o.Phone != "" {
-		return o.sessionPath(), nil
+		return o.sessionPath()
 	}
 
 	entries, err := os.ReadDir(dir)
@@ -280,6 +251,6 @@ func (o *loginOptions) resolveSessionPath() (string, error) {
 	case 1:
 		return found[0], nil
 	default:
-		return "", fmt.Errorf("session 目录下有 %d 个 session 文件，请用 --session 或 --phone 指定要探测哪一个", len(found))
+		return "", fmt.Errorf("session 目录下有 %d 个 session 文件，请用 --phone 指定要探测哪一个", len(found))
 	}
 }

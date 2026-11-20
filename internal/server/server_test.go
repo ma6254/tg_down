@@ -932,3 +932,49 @@ func TestRunListenError(t *testing.T) {
 		t.Fatal("非法端口应返回错误")
 	}
 }
+
+// TestStopClosesSSE 确认 Stop 会取消长连接，而不是干等到超时。
+//
+// /api/v1/events 是常驻 SSE：Shutdown 不会取消 handler 的 context，
+// 只等待它返回；不做 BaseContext 取消的话 Ctrl+C 必然拖满 10s 再报错。
+func TestStopClosesSSE(t *testing.T) {
+	hub := NewEventHub()
+	srv := New(Config{EventHub: hub})
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("监听失败: %v", err)
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	resp, err := http.Get("http://" + ln.Addr().String() + "/api/v1/events")
+	if err != nil {
+		t.Fatalf("连接 SSE 失败: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("状态码 = %d", resp.StatusCode)
+	}
+	// 读一帧 ping，确保 handler 已经进入事件循环。
+	buf := make([]byte, 64)
+	if _, err := resp.Body.Read(buf); err != nil {
+		t.Fatalf("读取 SSE 帧失败: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := srv.Stop(ctx); err != nil {
+		t.Fatalf("Stop 超时或失败: %v", err)
+	}
+
+	_ = ln.Close()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("Serve 返回错误: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Serve 未随 Stop 退出")
+	}
+}

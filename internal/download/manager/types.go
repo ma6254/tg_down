@@ -58,6 +58,9 @@ type Task struct {
 type CreateRequest struct {
 	Links     []string
 	Overwrite bool
+	// Single 为 true 时只下载链接直接指向的那条消息，不展开相册；
+	// 为 false（默认）时相册链接会展开成整组任务，与 CLI 行为一致。
+	Single bool
 }
 
 // Skip 记录因「没有可下载媒体」或「超过单文件上限」跳过的链接。

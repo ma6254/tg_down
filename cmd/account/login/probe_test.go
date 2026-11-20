@@ -20,14 +20,14 @@ func TestProbeValidate(t *testing.T) {
 			name: "probe 无需手机号",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true,
-				APIID: 123456, APIHash: testHash, SessionDir: "./sessions",
+				APIID: 123456, APIHash: testHash,
 			},
 		},
 		{
 			name: "probe 带手机号",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true,
-				APIID: 123456, APIHash: testHash, SessionDir: "./sessions",
+				APIID: 123456, APIHash: testHash,
 				Phone: testPhone,
 			},
 		},
@@ -35,16 +35,8 @@ func TestProbeValidate(t *testing.T) {
 			name: "probe 带验证码",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true,
-				APIID: 123456, APIHash: testHash, SessionDir: "./sessions",
+				APIID: 123456, APIHash: testHash,
 				Code: "12345",
-			},
-			wantErr: "--probe",
-		},
-		{
-			name: "probe 不能用 --session",
-			opts: &loginOptions{
-				Kind: accountKindMTProto, Probe: true,
-				SessionPath: "./sessions/other.json",
 			},
 			wantErr: "--probe",
 		},
@@ -59,21 +51,19 @@ func TestProbeValidate(t *testing.T) {
 			name: "probe 默认使用内置 desktop，无需 api 凭据",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true,
-				SessionDir: "./sessions",
 			},
 		},
 		{
 			name: "probe 忽略应用与 api 凭据",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true, App: mtproto.AppCustom,
-				SessionDir: "./sessions",
 			},
 		},
 		{
 			name: "probe 不使用手机号",
 			opts: &loginOptions{
 				Kind: accountKindMTProto, Probe: true,
-				APIID: 123456, APIHash: testHash, SessionDir: "./sessions",
+				APIID: 123456, APIHash: testHash,
 				Phone: "13800000000",
 			},
 		},
@@ -98,47 +88,40 @@ func TestProbeValidate(t *testing.T) {
 	}
 }
 
-// TestResolveSessionPath 覆盖 session 路径的三种来源。
+// TestResolveSessionPath 覆盖 session 路径的推导规则：只能落在数据目录下。
 func TestResolveSessionPath(t *testing.T) {
-	dir := t.TempDir()
-
-	t.Run("显式 --session 优先", func(t *testing.T) {
-		o := &loginOptions{SessionDir: dir, SessionPath: filepath.Join(dir, "custom.json"), Phone: testPhone}
-		got, err := o.resolveSessionPath()
-		if err != nil {
-			t.Fatalf("解析失败: %v", err)
-		}
-		if got != o.SessionPath {
-			t.Errorf("got %q，期望 %q", got, o.SessionPath)
-		}
-	})
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
+	sessions := filepath.Join(home, "sessions")
 
 	t.Run("按手机号推导", func(t *testing.T) {
-		o := &loginOptions{SessionDir: dir, Phone: testPhone}
+		o := &loginOptions{Phone: testPhone}
 		got, err := o.resolveSessionPath()
 		if err != nil {
 			t.Fatalf("解析失败: %v", err)
 		}
-		if !strings.HasSuffix(got, "mtproto-8613800000000.json") {
-			t.Errorf("got %q", got)
+		want := filepath.Join(sessions, "mtproto-8613800000000.json")
+		if got != want {
+			t.Errorf("got %q，期望 %q", got, want)
 		}
 	})
 
 	t.Run("目录为空时报错", func(t *testing.T) {
-		empty := t.TempDir()
-		o := &loginOptions{SessionDir: empty}
+		o := &loginOptions{}
 		if _, err := o.resolveSessionPath(); err == nil {
 			t.Fatal("期望报错，实际通过")
 		}
 	})
 
 	t.Run("目录中唯一 session 可直接使用", func(t *testing.T) {
-		only := t.TempDir()
-		path := filepath.Join(only, "mtproto-8613800000000.json")
+		if err := os.MkdirAll(sessions, 0o700); err != nil {
+			t.Fatalf("创建目录失败: %v", err)
+		}
+		path := filepath.Join(sessions, "mtproto-8613800000000.json")
 		if err := os.WriteFile(path, []byte("{}"), 0o600); err != nil {
 			t.Fatalf("写入失败: %v", err)
 		}
-		o := &loginOptions{SessionDir: only}
+		o := &loginOptions{}
 		got, err := o.resolveSessionPath()
 		if err != nil {
 			t.Fatalf("解析失败: %v", err)
@@ -148,14 +131,11 @@ func TestResolveSessionPath(t *testing.T) {
 		}
 	})
 
-	t.Run("多个 session 需要显式指定", func(t *testing.T) {
-		many := t.TempDir()
-		for _, name := range []string{"mtproto-8613800000000.json", "mtproto-8613900000000.json"} {
-			if err := os.WriteFile(filepath.Join(many, name), []byte("{}"), 0o600); err != nil {
-				t.Fatalf("写入失败: %v", err)
-			}
+	t.Run("多个 session 需要 --phone", func(t *testing.T) {
+		if err := os.WriteFile(filepath.Join(sessions, "mtproto-8613900000000.json"), []byte("{}"), 0o600); err != nil {
+			t.Fatalf("写入失败: %v", err)
 		}
-		o := &loginOptions{SessionDir: many}
+		o := &loginOptions{}
 		if _, err := o.resolveSessionPath(); err == nil {
 			t.Fatal("期望报错，实际通过")
 		}

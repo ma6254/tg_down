@@ -990,6 +990,11 @@
                     "type": "boolean",
                     "default": false,
                     "description": "为 true 时覆盖同名文件并从零下载；默认遇到同名文件会追加 (1) 序号"
+                  },
+                  "single": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "为 true 时只下载链接指向的那条消息，不展开相册；默认与 CLI 一致，相册链接展开成整组任务"
                   }
                 }
               },

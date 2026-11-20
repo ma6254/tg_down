@@ -7,11 +7,15 @@ import (
 	"testing"
 
 	"gorm.io/gorm"
+
+	"github.com/ma6254/tg_down/internal/appdir"
 )
 
 // openTestDB 打开内存数据库并建表。
 func openTestDB(t *testing.T) *DB {
 	t.Helper()
+	// session_path 的解析依赖数据目录，测试里固定到临时目录。
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
 	db, err := Open("sqlite", ":memory:")
 	if err != nil {
 		t.Fatalf("打开数据库失败: %v", err)
@@ -85,6 +89,99 @@ func TestAccountCRUD(t *testing.T) {
 	}
 	if _, err := db.GetAccount(account.ID); !errors.Is(err, gorm.ErrRecordNotFound) {
 		t.Errorf("删除后应返回 ErrRecordNotFound，实际 %v", err)
+	}
+}
+
+// TestAccountSessionPathRelative 确认 session_path 按相对数据目录的路径入库，
+// 读出时再还原成真实文件路径。
+func TestAccountSessionPathRelative(t *testing.T) {
+	db := openTestDB(t)
+	home, err := appdir.DataDir()
+	if err != nil {
+		t.Fatalf("解析数据目录失败: %v", err)
+	}
+
+	abs := filepath.Join(home, "sessions", "mtproto-8613800000001.json")
+	account := &Account{
+		Kind:        AccountKindMTProto,
+		Name:        "相对路径",
+		Phone:       "+8613800000001",
+		SessionPath: abs,
+		State:       AccountStateAuthed,
+	}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+
+	var stored string
+	if err := db.DB.Raw("SELECT session_path FROM accounts WHERE id = ?", account.ID).
+		Scan(&stored).Error; err != nil {
+		t.Fatalf("读取原始值失败: %v", err)
+	}
+	if stored != "sessions/mtproto-8613800000001.json" {
+		t.Errorf("库内 session_path = %q", stored)
+	}
+	// 内存里的 Account 保持真实路径，调用方不需要再解析。
+	if account.SessionPath != abs {
+		t.Errorf("内存路径被改写: %q", account.SessionPath)
+	}
+
+	got, err := db.GetAccount(account.ID)
+	if err != nil {
+		t.Fatalf("查询失败: %v", err)
+	}
+	if got.SessionPath != abs {
+		t.Errorf("读回 session_path = %q，期望 %q", got.SessionPath, abs)
+	}
+
+	// 按绝对路径也能查到（内部会先转成相对形式）。
+	found, err := db.FindAccountBySessionPath(abs)
+	if err != nil {
+		t.Fatalf("按 session 路径查询失败: %v", err)
+	}
+	if found.ID != account.ID {
+		t.Errorf("查到的 ID = %d，期望 %d", found.ID, account.ID)
+	}
+}
+
+// TestNormalizeSessionPaths 确认历史绝对路径会被改成相对路径，且可重复执行。
+func TestNormalizeSessionPaths(t *testing.T) {
+	db := openTestDB(t)
+	home, err := appdir.DataDir()
+	if err != nil {
+		t.Fatalf("解析数据目录失败: %v", err)
+	}
+
+	abs := filepath.Join(home, "sessions", "mtproto-8613800000002.json")
+	account := &Account{
+		Kind:        AccountKindMTProto,
+		Phone:       "+8613800000002",
+		SessionPath: abs,
+		State:       AccountStateAuthed,
+	}
+	if err := db.SaveAccount(account); err != nil {
+		t.Fatalf("保存失败: %v", err)
+	}
+	// 模拟历史数据：绕过 SaveAccount 直接写绝对路径。
+	if err := db.DB.Exec("UPDATE accounts SET session_path = ? WHERE id = ?", abs, account.ID).Error; err != nil {
+		t.Fatalf("写入历史数据失败: %v", err)
+	}
+
+	if err := db.NormalizeSessionPaths(); err != nil {
+		t.Fatalf("规范化失败: %v", err)
+	}
+	// 幂等：再次执行不应报错或改坏数据。
+	if err := db.NormalizeSessionPaths(); err != nil {
+		t.Fatalf("二次规范化失败: %v", err)
+	}
+
+	var stored string
+	if err := db.DB.Raw("SELECT session_path FROM accounts WHERE id = ?", account.ID).
+		Scan(&stored).Error; err != nil {
+		t.Fatalf("读取原始值失败: %v", err)
+	}
+	if stored != "sessions/mtproto-8613800000002.json" {
+		t.Errorf("规范化后 session_path = %q", stored)
 	}
 }
 

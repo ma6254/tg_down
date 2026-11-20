@@ -411,7 +411,8 @@ GET /api/v1/accounts/{id}/chats/{chat_id}/messages?offset_id=0&limit=50&media_on
 POST /api/v1/downloads
 body: {
   "links":["https://t.me/JPD233/2522","https://t.me/JPD233/2522?comment=12454"],
-  "overwrite": false            // 可选；true 时覆盖同名文件并从零下载
+  "overwrite": false,           // 可选；true 时覆盖同名文件并从零下载
+  "single": false               // 可选；true 时只下载链接指向的那条消息，不展开相册
 }
 → 201 {
   "created":  [42],                       // 新建并入队的任务
@@ -422,6 +423,9 @@ body: {
 ```
 
 - 链接唯一：同一个链接重复创建返回 `existing`，不会重复下载。
+- `single=true`：只下载链接直接指向的那条消息，不把相册展开成整组；
+  默认 `false` 与 CLI 一致，相册链接会展开成整组任务。网页媒体列表里的
+  单行「下载」按钮传 `true`，「全部下载」传 `false`。
 - `overwrite=true`：目标位置已有同名文件时直接替换（不再生成「名称 (1).ext」），
   并丢弃已有 `.part` 从零下载；默认 `false` 时同名文件加序号，同名同大小视为已完成。
   该标记随任务落库，任务详情里的 `overwrite` 字段可用于核对。

@@ -71,6 +71,9 @@ type DownloadCreateRequest struct {
 	// Overwrite 为 true 时，完成后覆盖同名文件，并丢弃已有 .part 从零下载；
 	// 默认 false 时遇到同名文件会加 " (1)" 后缀。
 	Overwrite bool `json:"overwrite,omitempty"`
+	// Single 为 true 时只下载链接指向的那条消息，不展开相册；
+	// 默认 false 与 CLI 一致：相册链接展开成整组任务。
+	Single bool `json:"single,omitempty"`
 }
 
 // DownloadSkip 记录因「已存在」或「没有可下载媒体」跳过的链接。

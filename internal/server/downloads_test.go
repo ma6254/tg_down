@@ -63,7 +63,7 @@ func TestDownloadCreateSuccess(t *testing.T) {
 	}).Handler()
 
 	rec := doJSONRequest(t, h, http.MethodPost, "/api/v1/downloads",
-		`{"links":["  https://t.me/a/1  ","https://t.me/a/2"],"overwrite":true}`, nil)
+		`{"links":["  https://t.me/a/1  ","https://t.me/a/2"],"overwrite":true,"single":true}`, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("状态码 = %d，期望 201，body=%s", rec.Code, rec.Body.String())
 	}
@@ -72,6 +72,9 @@ func TestDownloadCreateSuccess(t *testing.T) {
 	}
 	if !got.Overwrite {
 		t.Error("overwrite 没有传给业务层")
+	}
+	if !got.Single {
+		t.Error("single 没有传给业务层")
 	}
 
 	var resp DownloadCreateResponse

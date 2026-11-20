@@ -58,3 +58,63 @@ func TestDBPathCreatesDir(t *testing.T) {
 		t.Fatalf("数据目录未创建: %v", err)
 	}
 }
+
+// TestRelSessionPath 确认数据目录内的文件存成相对路径，目录外保留绝对路径。
+func TestRelSessionPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(EnvHome, home)
+
+	inside := filepath.Join(home, "sessions", "mtproto-8613800000000.json")
+	if got := RelSessionPath(inside); got != "sessions/mtproto-8613800000000.json" {
+		t.Errorf("数据目录内 = %q", got)
+	}
+	// 已经相对的路径只做分隔符归一，不重复加前缀。
+	if got := RelSessionPath("./sessions/mtproto-1.json"); got != "sessions/mtproto-1.json" {
+		t.Errorf("相对路径 = %q", got)
+	}
+	if got := RelSessionPath(""); got != "" {
+		t.Errorf("空路径 = %q", got)
+	}
+	outside := filepath.Join(t.TempDir(), "other.json")
+	if got := RelSessionPath(outside); !filepath.IsAbs(got) {
+		t.Errorf("数据目录外应保留绝对路径，实际 %q", got)
+	}
+}
+
+// TestAbsSessionPath 确认读库时把相对路径还原到数据目录。
+func TestAbsSessionPath(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(EnvHome, home)
+
+	want := filepath.Join(home, "sessions", "mtproto-1.json")
+	if got := AbsSessionPath("sessions/mtproto-1.json"); got != want {
+		t.Errorf("相对路径还原 = %q，期望 %q", got, want)
+	}
+	abs := filepath.Join(t.TempDir(), "custom.json")
+	if got := AbsSessionPath(abs); got != abs {
+		t.Errorf("绝对路径应原样返回，实际 %q", got)
+	}
+	if got := AbsSessionPath(""); got != "" {
+		t.Errorf("空路径 = %q", got)
+	}
+}
+
+// TestAbsSessionPathLegacyCWD 确认旧布局（相对工作目录）的文件仍能找到。
+func TestAbsSessionPathLegacyCWD(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv(EnvHome, home)
+	work := t.TempDir()
+	t.Chdir(work)
+
+	legacy := filepath.Join("sessions", "mtproto-legacy.json")
+	if err := os.MkdirAll(filepath.Dir(legacy), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(legacy, []byte("{}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := AbsSessionPath(filepath.ToSlash(legacy)); got != legacy {
+		t.Errorf("旧路径 = %q，期望 %q", got, legacy)
+	}
+}

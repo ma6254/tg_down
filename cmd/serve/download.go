@@ -52,7 +52,11 @@ func mapDownloadError(err error) error {
 // createDownloads 是 Config.CreateDownloads 的实现：领域请求进、接口 DTO 出。
 func createDownloads(mgr *manager.Manager) func(context.Context, server.DownloadCreateRequest) (server.DownloadCreateResponse, error) {
 	return func(ctx context.Context, req server.DownloadCreateRequest) (server.DownloadCreateResponse, error) {
-		result, err := mgr.Create(ctx, manager.CreateRequest{Links: req.Links, Overwrite: req.Overwrite})
+		result, err := mgr.Create(ctx, manager.CreateRequest{
+			Links:     req.Links,
+			Overwrite: req.Overwrite,
+			Single:    req.Single,
+		})
 		if err != nil {
 			return server.DownloadCreateResponse{}, mapDownloadError(err)
 		}

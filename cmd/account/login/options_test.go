@@ -20,10 +20,9 @@ const (
 // validMTProto 返回一份可通过校验的 mtproto 参数（默认走内置 desktop 应用，无需 api 凭据）。
 func validMTProto() *loginOptions {
 	return &loginOptions{
-		Kind:       accountKindMTProto,
-		App:        mtproto.AppDesktop,
-		Phone:      testPhone,
-		SessionDir: "./sessions",
+		Kind:  accountKindMTProto,
+		App:   mtproto.AppDesktop,
+		Phone: testPhone,
 	}
 }
 
@@ -186,6 +185,9 @@ func TestLoginOptionsValidate(t *testing.T) {
 
 // TestLoginOptionsBind 确认 login 的参数能正确解析。
 func TestLoginOptionsBind(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
+
 	o := newLoginOptions()
 	fs := pflag.NewFlagSet("login", pflag.ContinueOnError)
 	o.bind(fs)
@@ -194,7 +196,6 @@ func TestLoginOptionsBind(t *testing.T) {
 		"--phone", testPhone,
 		"--api-id", "654321",
 		"--api-hash", testHash,
-		"--session-dir", "./data/sessions",
 		"--name", "主号",
 		"--code", "12345",
 	})
@@ -208,17 +209,19 @@ func TestLoginOptionsBind(t *testing.T) {
 	if o.APIHash != testHash {
 		t.Errorf("APIHash = %q", o.APIHash)
 	}
-	if o.SessionDir != "./data/sessions" {
-		t.Errorf("SessionDir = %q", o.SessionDir)
-	}
 	if o.Name != "主号" {
 		t.Errorf("Name = %q", o.Name)
 	}
 	if err := o.validate(); err != nil {
 		t.Fatalf("校验失败: %v", err)
 	}
-	if got := o.sessionPath(); got != filepath.Join("./data/sessions", "mtproto-8613800000000.json") {
-		t.Errorf("sessionPath = %q", got)
+	got, err := o.sessionPath()
+	if err != nil {
+		t.Fatalf("sessionPath: %v", err)
+	}
+	want := filepath.Join(home, "sessions", "mtproto-8613800000000.json")
+	if got != want {
+		t.Errorf("sessionPath = %q，期望 %q", got, want)
 	}
 }
 
@@ -254,13 +257,27 @@ func TestDisplayName(t *testing.T) {
 
 // TestSessionPath 确认多个手机号会生成不同的 session 文件。
 func TestSessionPath(t *testing.T) {
-	a := &loginOptions{SessionDir: "./sessions", Phone: "+8613800000000"}
-	b := &loginOptions{SessionDir: "./sessions", Phone: "+8613900000000"}
-	if a.sessionPath() == b.sessionPath() {
-		t.Fatalf("不同手机号生成了相同的 session 路径: %s", a.sessionPath())
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
+
+	a := &loginOptions{Phone: "+8613800000000"}
+	b := &loginOptions{Phone: "+8613900000000"}
+	aPath, err := a.sessionPath()
+	if err != nil {
+		t.Fatalf("sessionPath: %v", err)
 	}
-	if !strings.Contains(a.sessionPath(), "8613800000000") {
-		t.Errorf("session 路径缺少手机号: %s", a.sessionPath())
+	bPath, err := b.sessionPath()
+	if err != nil {
+		t.Fatalf("sessionPath: %v", err)
+	}
+	if aPath == bPath {
+		t.Fatalf("不同手机号生成了相同的 session 路径: %s", aPath)
+	}
+	if !strings.Contains(aPath, "8613800000000") {
+		t.Errorf("session 路径缺少手机号: %s", aPath)
+	}
+	if !strings.HasPrefix(aPath, filepath.Join(home, "sessions")) {
+		t.Errorf("session 路径未落在数据目录: %s", aPath)
 	}
 }
 
@@ -307,55 +324,32 @@ func TestNewLoginOptionsDefaults(t *testing.T) {
 	if o.App != mtproto.AppDesktop {
 		t.Errorf("App = %q，期望 %q", o.App, mtproto.AppDesktop)
 	}
-	// session 目录留空，执行时解析到数据目录下（见 TestSessionDirDefault）。
-	if o.SessionDir != "" {
-		t.Errorf("SessionDir = %q，期望留空", o.SessionDir)
-	}
 }
 
-// TestSessionDirDefault 确认 session 默认放在数据目录里，且目录会被创建。
-func TestSessionDirDefault(t *testing.T) {
+// TestSessionsDirDefault 确认 session 固定在数据目录下，且目录会被创建。
+func TestSessionsDirDefault(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("TG_DOWN_HOME", home)
 
 	o := newLoginOptions()
-	dir, err := o.sessionDir()
+	dir, err := o.sessionsDir()
 	if err != nil {
-		t.Fatalf("sessionDir: %v", err)
+		t.Fatalf("sessionsDir: %v", err)
 	}
 	want := filepath.Join(home, "sessions")
 	if dir != want {
-		t.Errorf("sessionDir = %q，期望 %q", dir, want)
+		t.Errorf("sessionsDir = %q，期望 %q", dir, want)
 	}
 	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
 		t.Errorf("session 目录未创建: %v", err)
 	}
-	// 解析结果写回 SessionDir，后续 sessionPath 复用同一个目录。
-	if o.SessionDir != dir {
-		t.Errorf("SessionDir = %q，期望 %q", o.SessionDir, dir)
-	}
+
 	o.Phone = testPhone
-	if got := o.sessionPath(); got != filepath.Join(dir, "mtproto-"+digitsOnly(testPhone)+".json") {
-		t.Errorf("sessionPath = %q", got)
-	}
-
-	// 显式 --session-dir 优先，不受数据目录影响；同样解析成绝对路径。
-	explicit := &loginOptions{SessionDir: "./data/sessions"}
-	wantExplicit, err := filepath.Abs("./data/sessions")
+	got, err := o.sessionPath()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("sessionPath: %v", err)
 	}
-	if got, err := explicit.sessionDir(); err != nil || got != wantExplicit {
-		t.Errorf("显式目录 = %q, %v，期望 %q", got, err, wantExplicit)
-	}
-
-	// 显式 --session 也解析成绝对路径，避免库里留下相对路径。
-	byFile := &loginOptions{SessionPath: filepath.Join("data", "x.json")}
-	gotPath, err := byFile.resolveSessionPath()
-	if err != nil {
-		t.Fatalf("resolveSessionPath: %v", err)
-	}
-	if !filepath.IsAbs(gotPath) {
-		t.Errorf("显式 session 路径 = %q，期望绝对路径", gotPath)
+	if want := filepath.Join(dir, "mtproto-"+digitsOnly(testPhone)+".json"); got != want {
+		t.Errorf("sessionPath = %q，期望 %q", got, want)
 	}
 }

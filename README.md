@@ -129,7 +129,7 @@ tg_down account login --phone +8613800000000 --code 12345 --password s3cret
 # 探测本机 Telegram Desktop（tdata）中已登录的账号：不登录、不发码
 tg_down account login --probe
 
-# 探测本工具自己保存的 session（可选 --phone/--session 指定）
+# 探测本工具自己保存的 session（多个时用 --phone 指定）
 tg_down account login --probe-session
 ```
 
@@ -144,8 +144,6 @@ tg_down account login --probe-session
 | `--token` | Bot API token，形如 `123456789:AA...` |
 | `--code` | 登录验证码，留空则登录时交互输入 |
 | `--password` | 两步验证密码，留空则在需要时交互输入 |
-| `--session-dir` | session 存放目录，默认 `<数据目录>/sessions`（即 `~/.tg_down/sessions`） |
-| `--session` | 直接指定 session 文件，优先于按手机号推导 |
 | `--probe` | 探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录 |
 | `--probe-timeout` | 探测时连接 Telegram 的超时，默认 `30s` |
 | `--probe-session` | 探测本工具自己保存的 session，不登录、不发码 |
@@ -154,7 +152,7 @@ tg_down account login --probe-session
 
 登录成功后 session 写入 `<数据目录>/sessions/mtproto-<手机号数字>.json`（默认 `~/.tg_down/sessions/`），
 权限收紧到 `0600`。该文件等同于账号凭证，**不要提交或分享**（`.gitignore` 已忽略 `sessions/`）。
-数据目录在用户主目录下，不随启动目录变化；需要换位置时用 `TG_DOWN_HOME` 或 `--session-dir`。
+session 位置固定跟随数据目录，不随启动目录变化；需要整体换位置时用 `TG_DOWN_HOME`。
 重复登录会复用有效 session，直接打印当前账号。
 
 账号登记到数据库后，如果库里**只有一个账号**，会自动设为当前账号（`settings.current_account_id`），
@@ -224,7 +222,7 @@ tg_down account login --probe-session --phone +8613800000000
 
 输出 session 路径、登录状态、账号信息与已登录客户端；session 已失效时退出码仍为 0，
 只在状态里标「未授权」——那是探测结果，不是失败。session 定位顺序：
-`--session` → 按 `--phone` 推导 → `<数据目录>/sessions` 下唯一的 `mtproto-*.json`。
+有 `--phone` 按手机号推导，否则用 `<数据目录>/sessions` 下唯一的 `mtproto-*.json`。
 
 ### 查看与退出
 
@@ -330,8 +328,9 @@ $ tg_down account list
 - 数据库使用纯 Go 驱动（`glebarez/sqlite` → `modernc.org/sqlite`），**不需要 CGO / gcc**。
 - `accounts` 表字段：`id / kind / name / phone / username / session_path / state / last_error / created_at / updated_at`。
 - `settings` 表字段：`key / value / updated_at`。
-- session 文件本身存放在 `<数据目录>/sessions`（默认 `~/.tg_down/sessions/`，可用 `--session-dir` 覆盖），
-  数据库只记录其路径；token、session 内容不写入数据库。
+- session 文件本身存放在 `<数据目录>/sessions`（默认 `~/.tg_down/sessions/`，位置固定，只随 `TG_DOWN_HOME` 变化），
+  数据库只记录**相对数据目录**的路径（如 `sessions/mtproto-xxx.json`），整个数据目录搬走后仍然有效；
+  token、session 内容不写入数据库。
 
 ## 系统配置
 

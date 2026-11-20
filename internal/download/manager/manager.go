@@ -302,10 +302,8 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 		}
 
 		// 相册链接会展开成多条任务：每张图/视频各有一条消息。
-		medias := result.Medias
-		if len(medias) == 0 && result.Media != nil {
-			medias = []*mtproto.Media{result.Media}
-		}
+		// Single 时只取链接指向的那条消息，不做相册展开。
+		medias := selectMedias(&result, req.Single)
 		if len(medias) == 0 {
 			resp.Skipped = append(resp.Skipped, Skip{Link: raw, Reason: "该消息没有可下载的媒体"})
 			continue
@@ -369,6 +367,27 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 		}
 	}
 	return resp, nil
+}
+
+// selectMedias 决定一次解析结果要下载哪些媒体。
+//
+// 默认行为与 CLI 一致：相册链接展开成整组（result.Medias）。
+// single 为 true 时只取链接直接指向的那条消息（result.Media），
+// 让前端媒体列表里的「下载」按钮只下载选中的一张/一个文件。
+func selectMedias(result *mtproto.LinkResult, single bool) []*mtproto.Media {
+	if single {
+		if result.Media == nil {
+			return nil
+		}
+		return []*mtproto.Media{result.Media}
+	}
+	if len(result.Medias) > 0 {
+		return result.Medias
+	}
+	if result.Media != nil {
+		return []*mtproto.Media{result.Media}
+	}
+	return nil
 }
 
 // taskThumbnailSlots 限制同时抓取缩略图的数量：列表首屏可能一次可见多行，

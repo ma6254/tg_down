@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"gorm.io/gorm"
+
+	"github.com/ma6254/tg_down/internal/appdir"
 )
 
 // 账号类型与状态。
@@ -60,11 +62,28 @@ func (a Account) TelegramIDValue() int64 {
 func (Account) TableName() string { return "accounts" }
 
 // SaveAccount 新增或更新账号。
+//
+// 写库前把 session_path 相对化到数据目录：数据库整体搬走后路径仍然有效。
+// 调用方（以及随后读出的 Account）拿到的是真实文件路径。
 func (d *DB) SaveAccount(account *Account) error {
 	if account.CreatedAt.IsZero() {
 		account.CreatedAt = time.Now()
 	}
-	return d.DB.Save(account).Error
+	row := *account
+	row.SessionPath = appdir.RelSessionPath(account.SessionPath)
+	if err := d.DB.Save(&row).Error; err != nil {
+		return err
+	}
+	// 回填自增 ID 与时间戳；内存里的 SessionPath 保持真实路径。
+	account.ID = row.ID
+	account.CreatedAt = row.CreatedAt
+	account.UpdatedAt = row.UpdatedAt
+	return nil
+}
+
+// resolveSessionPath 把库里的相对路径还原成真实文件路径。
+func (a *Account) resolveSessionPath() {
+	a.SessionPath = appdir.AbsSessionPath(a.SessionPath)
 }
 
 // ListAccounts 按创建时间倒序返回全部账号。
@@ -72,6 +91,9 @@ func (d *DB) ListAccounts() ([]Account, error) {
 	var items []Account
 	if err := d.DB.Order("created_at DESC").Find(&items).Error; err != nil {
 		return nil, err
+	}
+	for i := range items {
+		items[i].resolveSessionPath()
 	}
 	return items, nil
 }
@@ -86,6 +108,7 @@ func (d *DB) GetAccount(id int64) (*Account, error) {
 		}
 		return nil, err
 	}
+	item.resolveSessionPath()
 	return &item, nil
 }
 
@@ -95,15 +118,19 @@ func (d *DB) FindAccountByPhone(phone string) (*Account, error) {
 	if err := d.DB.Where("phone = ?", phone).First(&item).Error; err != nil {
 		return nil, err
 	}
+	item.resolveSessionPath()
 	return &item, nil
 }
 
 // FindAccountBySessionPath 按 session 文件路径查询账号。
+//
+// 入参可以是绝对路径，也可以是从库里读出的相对路径；统一按相对形式匹配。
 func (d *DB) FindAccountBySessionPath(path string) (*Account, error) {
 	var item Account
-	if err := d.DB.Where("session_path = ?", path).First(&item).Error; err != nil {
+	if err := d.DB.Where("session_path = ?", appdir.RelSessionPath(path)).First(&item).Error; err != nil {
 		return nil, err
 	}
+	item.resolveSessionPath()
 	return &item, nil
 }
 
@@ -113,6 +140,7 @@ func (d *DB) FindAccountByTelegramID(telegramID int64) (*Account, error) {
 	if err := d.DB.Where("tg_user_id = ?", telegramID).First(&item).Error; err != nil {
 		return nil, err
 	}
+	item.resolveSessionPath()
 	return &item, nil
 }
 
@@ -128,4 +156,29 @@ func (d *DB) CountAccounts() (int64, error) {
 // DeleteAccount 删除账号。
 func (d *DB) DeleteAccount(id int64) error {
 	return d.DB.Delete(&Account{}, id).Error
+}
+
+// NormalizeSessionPaths 把历史数据里存成绝对路径的 session_path 改成相对路径。
+//
+// 读取本来就兼容两种形式；这里只是把库里的存量统一成"相对数据目录"，
+// 让数据目录整体搬走后路径不再失效。重复执行无副作用。
+func (d *DB) NormalizeSessionPaths() error {
+	var rows []Account
+	if err := d.DB.Select("id", "session_path").Find(&rows).Error; err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if row.SessionPath == "" {
+			continue
+		}
+		rel := appdir.RelSessionPath(row.SessionPath)
+		if rel == row.SessionPath {
+			continue
+		}
+		if err := d.DB.Model(&Account{}).Where("id = ?", row.ID).
+			Update("session_path", rel).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }

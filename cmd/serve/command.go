@@ -153,9 +153,11 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 // serveUntilSignal 运行 HTTP 服务，收到 Ctrl+C 或 SIGTERM 后优雅关闭。
 //
 // stops 是额外需要关闭的后台组件（如下载管理器），在 HTTP 优雅关闭前调用。
+// 收到信号时会打印信号类型；再次按 Ctrl+C 恢复默认行为（立即退出）。
 func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, addr string, stops ...func(context.Context)) error {
-	ctx, stop := signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sigCh)
 
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(ln) }()
@@ -163,10 +165,14 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, 
 	select {
 	case err := <-errCh:
 		return err
+	case sig := <-sigCh:
+		// 第一个信号进入优雅关闭；注销后第二个 Ctrl+C 回到默认的强制终止。
+		signal.Stop(sigCh)
+		fmt.Printf("\n收到 %s，正在关闭 %s ...\n", signalName(sig), addr)
 	case <-ctx.Done():
+		fmt.Printf("\n正在关闭 %s ...\n", addr)
 	}
 
-	fmt.Printf("\n正在关闭 %s ...\n", addr)
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), serveShutdownTimeout)
 	defer cancel()
 	for _, stopFn := range stops {
@@ -177,6 +183,18 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, 
 	}
 	fmt.Println("已退出")
 	return nil
+}
+
+// signalName 把信号映射成可读名字，便于确认是哪种方式结束了进程。
+func signalName(sig os.Signal) string {
+	switch sig {
+	case os.Interrupt:
+		return "Ctrl+C（interrupt）"
+	case syscall.SIGTERM:
+		return "SIGTERM（terminate）"
+	default:
+		return sig.String()
+	}
 }
 
 // listenError 把底层网络错误翻译成可操作的提示。
