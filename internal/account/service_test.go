@@ -292,6 +292,7 @@ func TestRecordSource(t *testing.T) {
 		t.Errorf("Source = %q，期望 desktop", row.Source)
 	}
 }
+
 // TestBindTelegramID 确认联网拿到的 user.id 会补写到账号记录。
 func TestBindTelegramID(t *testing.T) {
 	svc := newTestService(t)

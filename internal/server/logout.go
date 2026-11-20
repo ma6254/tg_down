@@ -25,6 +25,8 @@ func (s *Server) handleAccountLogout(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.Is(err, ErrAccountNotFound):
 			writeError(w, http.StatusNotFound, "not_found", err.Error())
+		case errors.Is(err, ErrAccountDesktopLogout):
+			writeError(w, http.StatusConflict, "conflict", err.Error())
 		case errors.Is(err, context.DeadlineExceeded):
 			writeError(w, http.StatusGatewayTimeout, "logout_timeout", "登出超时，请稍后重试")
 		default:

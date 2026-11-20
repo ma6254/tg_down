@@ -23,6 +23,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/ma6254/tg_down/internal/config"
 )
 
 // Config 是 HTTP 服务的启动参数。
@@ -72,12 +74,13 @@ type Config struct {
 	// 可归因的失败；为 nil 时接口返回 501。
 	PreviewLinks func(ctx context.Context, req PreviewRequest) (PreviewResponse, error)
 
-	// GetSettings 返回全部配置项；为 nil 时接口返回 501。
-	GetSettings func(ctx context.Context) ([]Setting, error)
+	// GetSettings 返回全部配置项（领域记录，DTO 映射在 server 内完成）；
+	// 为 nil 时接口返回 501。
+	GetSettings func(ctx context.Context) ([]config.Entry, error)
 
 	// UpdateSettings 应用部分更新（值为 nil 表示删除），返回更新后的全量配置。
-	// 业务层用 ErrSettingInvalid 表示未知键、值非法或只读；为 nil 时接口返回 501。
-	UpdateSettings func(ctx context.Context, patch SettingsPatch) ([]Setting, error)
+	// 业务层用 config.ErrInvalidSetting 表示未知键或取值非法；为 nil 时接口返回 501。
+	UpdateSettings func(ctx context.Context, patch map[string]*string) ([]config.Entry, error)
 
 	// CreateDownloads 解析链接、创建下载任务并入队；为 nil 时接口返回 501。
 	CreateDownloads func(ctx context.Context, req DownloadCreateRequest) (DownloadCreateResponse, error)

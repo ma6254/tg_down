@@ -8,6 +8,10 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/ma6254/tg_down/internal/account"
+	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
+	"github.com/ma6254/tg_down/internal/utils"
 )
 
 const (
@@ -65,6 +69,55 @@ type ProbeDevice struct {
 	Country       string `json:"country,omitempty"`
 	CreatedAt     int64  `json:"created_at,omitempty"` // Unix 秒
 	ActiveAt      int64  `json:"active_at,omitempty"`  // Unix 秒
+}
+
+// NewProbeResponse 把探测结果转换成接口结构。
+func NewProbeResponse(result account.ProbeResult) ProbeResponse {
+	resp := ProbeResponse{
+		TDataPath:         result.TDataPath,
+		Imported:          result.Imported,
+		Skipped:           result.Skipped,
+		SelectedAccountID: result.SelectedAccountID,
+	}
+	for _, item := range result.Accounts {
+		probed := ProbeAccount{
+			Index:    item.Index,
+			UserID:   item.UserID,
+			Name:     item.Name,
+			Username: item.Username,
+			Phone:    item.Phone,
+			Devices:  NewProbeDevices(item.Devices),
+		}
+		if item.Err != nil {
+			probed.Error = item.Err.Error()
+		}
+		resp.Accounts = append(resp.Accounts, probed)
+	}
+	return resp
+}
+
+// NewProbeDevices 把 mtproto 的客户端信息转换成接口结构。
+//
+// 设备列表在探测结果与在线资料里共用，映射只做字段搬运。
+func NewProbeDevices(devices []mtproto.Device) []ProbeDevice {
+	if len(devices) == 0 {
+		return nil
+	}
+	out := make([]ProbeDevice, 0, len(devices))
+	for _, d := range devices {
+		out = append(out, ProbeDevice{
+			Current:       d.Current,
+			AppName:       d.AppName,
+			AppVersion:    d.AppVersion,
+			Platform:      d.Platform,
+			DeviceModel:   d.DeviceModel,
+			SystemVersion: d.SystemVersion,
+			Country:       d.Country,
+			CreatedAt:     utils.UnixOrZero(d.CreatedAt),
+			ActiveAt:      utils.UnixOrZero(d.ActiveAt),
+		})
+	}
+	return out
 }
 
 // handleLoginProbe 处理 POST /api/v1/accounts/probe：

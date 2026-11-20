@@ -2,12 +2,10 @@ package serve
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
-	"gorm.io/gorm"
-
 	accountsvc "github.com/ma6254/tg_down/internal/account"
+	"github.com/ma6254/tg_down/internal/avatar"
 	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/utils"
 )
@@ -27,18 +25,10 @@ func deleteAccount(ctx context.Context, id int64) (server.AccountDeleteResult, e
 	}
 	defer db.Close()
 
-	acct, err := db.GetAccount(id)
+	removed, removedSession, err := accountsvc.New(db).Remove(id)
 	if err != nil {
-		if errors.Is(err, gorm.ErrRecordNotFound) {
-			return server.AccountDeleteResult{}, fmt.Errorf("%w: 账号 ID %d 不存在", server.ErrAccountNotFound, id)
-		}
-		return server.AccountDeleteResult{}, fmt.Errorf("查询账号 %d: %w", id, err)
+		return server.AccountDeleteResult{}, mapAccountError(err)
 	}
-
-	removedSession, err := accountsvc.New(db).Delete(*acct)
-	if err != nil {
-		return server.AccountDeleteResult{}, fmt.Errorf("删除账号 %d: %w", acct.ID, err)
-	}
-	removeAvatarCache(*acct)
+	avatar.Remove(removed)
 	return server.AccountDeleteResult{OK: true, RemovedSession: removedSession}, nil
 }

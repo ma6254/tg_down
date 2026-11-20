@@ -1,11 +1,10 @@
-package serve
+package manager
 
 import (
 	"context"
 	"testing"
 
 	"github.com/ma6254/tg_down/internal/database"
-	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
 
@@ -31,8 +30,8 @@ func TestPickTaskMedia(t *testing.T) {
 // 完成时先落库 done、后注销 run；如果 snapshot 无条件用 run 覆盖，
 // 发出的 task.update 会是「running + 100%」，前端只能等轮询才变成已完成。
 func TestSnapshotTerminalStatusWins(t *testing.T) {
-	m := newDownloadManager("", 1, server.NewEventHub())
-	t.Cleanup(func() { m.stop(context.Background()) })
+	m := New(Config{Workers: 1})
+	t.Cleanup(func() { m.Stop(context.Background()) })
 
 	run := &downloadRun{done: make(chan struct{})}
 	run.setOffset(100)
@@ -44,8 +43,8 @@ func TestSnapshotTerminalStatusWins(t *testing.T) {
 		Offset:   100,
 		FileSize: 100,
 	})
-	if done.Status != database.DownloadStatusDone {
-		t.Errorf("done 快照状态 = %q，期望 %q", done.Status, database.DownloadStatusDone)
+	if done.Row.Status != database.DownloadStatusDone {
+		t.Errorf("done 快照状态 = %q，期望 %q", done.Row.Status, database.DownloadStatusDone)
 	}
 	if done.Offset != 100 {
 		t.Errorf("done 快照 offset = %d，期望 100", done.Offset)
@@ -56,7 +55,7 @@ func TestSnapshotTerminalStatusWins(t *testing.T) {
 		Status:   database.DownloadStatusRunning,
 		FileSize: 100,
 	})
-	if running.Status != database.DownloadStatusRunning || running.Offset != 100 {
+	if running.Row.Status != database.DownloadStatusRunning || running.Offset != 100 {
 		t.Errorf("running 快照 = %+v，期望 running/100", running)
 	}
 }

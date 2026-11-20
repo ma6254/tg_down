@@ -49,12 +49,6 @@ var thumbnails = &thumbnailStore{items: make(map[string]*thumbnailEntry)}
 // 避免多张图同时向 Telegram 发请求。
 var thumbnailDownloadMu sync.Mutex
 
-// thumbnailFetchers 按 session 缓存常驻连接，列表里的封面共用同一条连接。
-var (
-	thumbnailFetchersMu sync.Mutex
-	thumbnailFetchers   = make(map[string]*mtproto.ThumbnailFetcher)
-)
-
 // RegisterThumbnail 登记一张媒体缩略图，返回 token。
 //
 // token 拼进 /api/v1/media/thumbnail/{token} 即可下载；媒体身份相同的多次
@@ -146,7 +140,7 @@ func fetchMediaThumbnail(ctx context.Context, token string) (MediaThumbnail, err
 	callCtx, cancel := context.WithTimeout(ctx, ThumbnailTimeout)
 	defer cancel()
 
-	fetcher, err := ThumbnailFetcher(callCtx, entry.session)
+	fetcher, err := mtproto.SharedThumbnailFetcher(callCtx, entry.session)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			return MediaThumbnail{}, err
@@ -177,23 +171,7 @@ func fetchMediaThumbnail(ctx context.Context, token string) (MediaThumbnail, err
 	return MediaThumbnail{Data: data, ContentType: "image/jpeg"}, nil
 }
 
-// ThumbnailFetcher 返回该 session 的常驻缩略图下载器，连接已退出时重建。
-//
-// 账号头像与列表封面共用同一个下载器：每个 session 只保留一条连接。
-func ThumbnailFetcher(ctx context.Context, session mtproto.Session) (*mtproto.ThumbnailFetcher, error) {
-	key := session.SessionPath + "|" + session.Proxy
-
-	thumbnailFetchersMu.Lock()
-	defer thumbnailFetchersMu.Unlock()
-
-	if fetcher, ok := thumbnailFetchers[key]; ok && fetcher.Alive() {
-		return fetcher, nil
-	}
-
-	fetcher, err := mtproto.StartThumbnailFetcher(ctx, session)
-	if err != nil {
-		return nil, err
-	}
-	thumbnailFetchers[key] = fetcher
-	return fetcher, nil
+// NewMediaThumbnail 把头像/缩略图字节包装成接口结构。
+func NewMediaThumbnail(data []byte) MediaThumbnail {
+	return MediaThumbnail{Data: data, ContentType: "image/jpeg"}
 }

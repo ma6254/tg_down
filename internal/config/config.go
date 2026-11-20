@@ -69,7 +69,7 @@ var items = []Item{
 	{
 		Key:         KeyHTTPProxyEnabled,
 		Type:        TypeBoolean,
-		Default:     "false",
+		Default:     "true",
 		Description: "是否启用 http_proxy；false 时即使配置了代理也直连",
 		Validate:    ValidateBool,
 	},
@@ -159,6 +159,8 @@ type Entry struct {
 	Default string
 	Value   string
 	Known   bool // 是否为已知配置项
+
+	Description string // 已知配置项的说明，未知键为空
 }
 
 // Store 提供配置的读写能力。
@@ -293,13 +295,17 @@ func (s *Store) List() ([]Entry, error) {
 		if valueType == "" {
 			valueType = TypeString
 		}
-		entries = append(entries, Entry{
+		entry := Entry{
 			Key:     row.Key,
 			Type:    valueType,
 			Default: defaultValue,
 			Value:   strings.TrimSpace(row.Value),
 			Known:   known,
-		})
+		}
+		if known {
+			entry.Description = item.Description
+		}
+		entries = append(entries, entry)
 	}
 	return entries, nil
 }
@@ -326,8 +332,8 @@ func SyncTypes(db *database.DB) error {
 // SeedDefaults 在 settings 表完全为空时写入带非空默认值的配置项。
 //
 // 空默认值（http_proxy、current_account_id）表示「未配置」，不落库；
-// 目前只写入 http_proxy_enabled=true。已有任意配置时不做任何事，
-// 避免把用户主动清除的配置重新写回来。
+// 目前会写入 api_custom_enabled=false 与 http_proxy_enabled=true。
+// 已有任意配置时不做任何事，避免把用户主动清除的配置重新写回来。
 func SeedDefaults(db *database.DB) error {
 	entries, err := db.ListSettings()
 	if err != nil {

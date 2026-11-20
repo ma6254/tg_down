@@ -13,6 +13,33 @@ import (
 	"github.com/gotd/td/tg"
 )
 
+// 共享的缩略图下载器池：同一个 session 只保留一条常驻连接。
+var (
+	sharedFetchersMu sync.Mutex
+	sharedFetchers   = make(map[string]*ThumbnailFetcher)
+)
+
+// SharedThumbnailFetcher 返回该 session 的常驻缩略图下载器，连接已退出时重建。
+//
+// 账号头像与列表封面共用同一个下载器：每个 session 只保留一条连接，
+// 避免同一账号在预览页和头像请求里各建一条。
+func SharedThumbnailFetcher(ctx context.Context, s Session) (*ThumbnailFetcher, error) {
+	key := s.SessionPath + "|" + s.Proxy
+
+	sharedFetchersMu.Lock()
+	defer sharedFetchersMu.Unlock()
+
+	if fetcher, ok := sharedFetchers[key]; ok && fetcher.Alive() {
+		return fetcher, nil
+	}
+	fetcher, err := StartThumbnailFetcher(ctx, s)
+	if err != nil {
+		return nil, err
+	}
+	sharedFetchers[key] = fetcher
+	return fetcher, nil
+}
+
 // DownloadThumbnail 下载媒体缩略图（JPEG 字节）。
 //
 // 缩略图很小，单次下载即可；调用方负责缓存与限制并发。

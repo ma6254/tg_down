@@ -14,6 +14,7 @@ import (
 	accounts "github.com/ma6254/tg_down/internal/account"
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/database"
+	"github.com/ma6254/tg_down/internal/download/runner"
 	"github.com/ma6254/tg_down/internal/link"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 	"github.com/ma6254/tg_down/internal/utils"
@@ -195,18 +196,22 @@ func runDownload(cmd *cobra.Command, opts *options) error {
 	progress := newDownloadProgress(totalBytes, len(jobs), concurrency)
 	defer progress.close()
 
-	downloadResults, err := session.DownloadMedia(cmd.Context(), jobs, mtproto.DownloadOptions{
+	runner := runner.Runner{
+		Session:     session,
 		RootDir:     dir,
 		Concurrency: concurrency,
 		Threads:     opts.Threads,
 		Force:       opts.Force,
 		Overwrite:   opts.Force,
 		Flat:        opts.Flat,
-		OnStart:     progress.start,
-		OnProgress:  progress.tick,
-		OnDone:      progress.done,
-		OnRetry:     progress.retry,
-	})
+		Hooks: runner.Hooks{
+			OnStart:    progress.start,
+			OnProgress: progress.tick,
+			OnDone:     progress.done,
+			OnRetry:    progress.retry,
+		},
+	}
+	downloadResults, err := runner.Download(cmd.Context(), jobs)
 	if err != nil {
 		progress.abort()
 		return err

@@ -95,7 +95,7 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 
 	// 下载任务管理器：worker 在后台执行队列，状态落库，重启后残留任务标记为暂停。
 	mgr := newDownloadManager(opts.DownloadDir, opts.MaxConcurrency, hub)
-	if err := mgr.start(); err != nil {
+	if err := mgr.Start(); err != nil {
 		return fmt.Errorf("初始化下载任务: %w", err)
 	}
 
@@ -132,22 +132,22 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,
 		// 下载任务：创建后由后台 worker 执行，进度通过 SSE 推送。
-		CreateDownloads: mgr.create,
-		ListDownloads:   mgr.list,
-		GetDownload:     mgr.get,
-		ControlDownload: mgr.control,
+		CreateDownloads: createDownloads(mgr),
+		ListDownloads:   listDownloads(mgr),
+		GetDownload:     getDownload(mgr),
+		ControlDownload: controlDownload(mgr),
 		DeleteDownload: func(_ context.Context, id uint, deleteFile bool) error {
-			return mgr.remove(id, deleteFile)
+			return mapDownloadError(mgr.Remove(id, deleteFile))
 		},
 		// 实时事件与任务缩略图：前者由 hub 直接提供，后者按任务按需生成。
 		EventHub:             hub,
-		GetDownloadThumbnail: mgr.thumbnail,
+		GetDownloadThumbnail: downloadThumbnail(mgr),
 		// 前端接入方式随 Web 构建产物一起接入（proxy / dir / embed）。
 	})
 
 	addr := ln.Addr().String()
 	printStartupInfo(addr, opts)
-	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.stop)
+	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.Stop)
 }
 
 // serveUntilSignal 运行 HTTP 服务，收到 Ctrl+C 或 SIGTERM 后优雅关闭。

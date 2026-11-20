@@ -280,21 +280,27 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List 失败: %v", err)
 	}
-	if len(entries) != 1 {
-		t.Fatalf("默认配置应有 1 项，实际 %+v", entries)
+	// 目前默认值非空的项：api_custom_enabled（false）、http_proxy_enabled（true）。
+	if len(entries) != 2 {
+		t.Fatalf("默认配置应有 2 项，实际 %+v", entries)
 	}
-	if entries[0].Key != KeyHTTPProxyEnabled ||
-		entries[0].Value != "true" ||
-		entries[0].Type != TypeBoolean {
-		t.Errorf("默认配置 = %+v", entries[0])
+	byKey := make(map[string]Entry, len(entries))
+	for _, entry := range entries {
+		byKey[entry.Key] = entry
+	}
+	if got := byKey[KeyHTTPProxyEnabled]; got.Value != "true" || got.Type != TypeBoolean {
+		t.Errorf("http_proxy_enabled = %+v", got)
+	}
+	if got := byKey[KeyAPICustomEnabled]; got.Value != "false" || got.Type != TypeBoolean {
+		t.Errorf("api_custom_enabled = %+v", got)
 	}
 
 	// 幂等：再次调用不会重复插入。
 	if err := SeedDefaults(store.db); err != nil {
 		t.Fatalf("再次 SeedDefaults 失败: %v", err)
 	}
-	if entries, _ := store.List(); len(entries) != 1 {
-		t.Errorf("重复调用后应有 1 项，实际 %+v", entries)
+	if entries, _ := store.List(); len(entries) != 2 {
+		t.Errorf("重复调用后应有 2 项，实际 %+v", entries)
 	}
 
 	// 已有任意配置时不补默认值。

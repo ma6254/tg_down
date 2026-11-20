@@ -1,4 +1,4 @@
-package serve
+package manager
 
 import (
 	"context"
@@ -13,8 +13,8 @@ import (
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/database"
 	downloadsvc "github.com/ma6254/tg_down/internal/download"
+	"github.com/ma6254/tg_down/internal/download/runner"
 	"github.com/ma6254/tg_down/internal/link"
-	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 	"github.com/ma6254/tg_down/internal/thumbcache"
 	"github.com/ma6254/tg_down/internal/utils"
@@ -32,21 +32,28 @@ const (
 	downloadProgressInterval = 1500 * time.Millisecond
 	// downloadResolveTimeout 是任务执行前重新解析消息的超时。
 	downloadResolveTimeout = 90 * time.Second
+	// taskThumbnailTimeout 限制任务卡片缩略图的下载时间。
+	taskThumbnailTimeout = 30 * time.Second
+	// 批量解析超时按链接数放宽：建立连接 + 每条一次批量取消息。
+	resolveBaseTimeout = 60 * time.Second
+	resolvePerLink     = 5 * time.Second
+	resolveMaxTimeout  = 5 * time.Minute
 )
 
-// downloadManager 负责任务队列、并发执行与暂停/恢复。
+// Manager 负责任务队列、并发执行与暂停/恢复。
 //
 // 任务状态持久化在 SQLite；进度只放在内存里，按固定间隔落库，
 // 避免每个分块都写一次数据库。
-type downloadManager struct {
+type Manager struct {
 	rootDir string
 	workers int
 
-	ctx    context.Context
-	cancel context.CancelFunc
-	queue  chan uint
-	wg     sync.WaitGroup
-	hub    *server.EventHub
+	ctx          context.Context
+	cancel       context.CancelFunc
+	queue        chan uint
+	wg           sync.WaitGroup
+	onEvent      func(Event)
+	thumbnailURL func(mtproto.Session, mtproto.Thumb) string
 
 	mu     sync.Mutex
 	runs   map[uint]*downloadRun
@@ -70,7 +77,12 @@ type downloadRun struct {
 	lastPersist time.Time
 }
 
-func newDownloadManager(rootDir string, workers int, hub *server.EventHub) *downloadManager {
+// New 创建下载管理器。
+//
+// onEvent 在任务状态变化时被调用（转成 SSE 由调用方决定）；
+// thumbnailURL 为任务卡片封面登记一次性 token 地址，返回空串表示不展示封面。
+func New(cfg Config) *Manager {
+	workers := cfg.Workers
 	if workers < 1 {
 		workers = 1
 	}
@@ -78,19 +90,20 @@ func newDownloadManager(rootDir string, workers int, hub *server.EventHub) *down
 		workers = 8
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	return &downloadManager{
-		rootDir: rootDir,
-		workers: workers,
-		ctx:     ctx,
-		cancel:  cancel,
-		queue:   make(chan uint, downloadQueueSize),
-		runs:    make(map[uint]*downloadRun),
-		hub:     hub,
+	return &Manager{
+		rootDir:      cfg.RootDir,
+		workers:      workers,
+		ctx:          ctx,
+		cancel:       cancel,
+		queue:        make(chan uint, downloadQueueSize),
+		runs:         make(map[uint]*downloadRun),
+		onEvent:      cfg.OnEvent,
+		thumbnailURL: cfg.ThumbnailURL,
 	}
 }
 
-// start 启动 worker，并把上次进程残留的 running 任务标记为 paused。
-func (m *downloadManager) start() error {
+// Start 启动 worker，并把上次进程残留的 running 任务标记为 paused。
+func (m *Manager) Start() error {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return err
@@ -118,8 +131,8 @@ func (m *downloadManager) start() error {
 	return nil
 }
 
-// stop 取消所有运行中的任务并等待 worker 退出；状态会落库为 paused。
-func (m *downloadManager) stop(ctx context.Context) {
+// Stop 取消所有运行中的任务并等待 worker 退出；状态会落库为 paused。
+func (m *Manager) Stop(ctx context.Context) {
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -138,11 +151,30 @@ func (m *downloadManager) stop(ctx context.Context) {
 	case <-done:
 	case <-ctx.Done():
 	}
-	m.hub.Close()
+}
+
+// mediaURL 为缩略图登记 token 并返回可访问地址；未注入登记函数时不带封面。
+func (m *Manager) mediaURL(session mtproto.Session, thumb mtproto.Thumb) string {
+	if m.thumbnailURL == nil {
+		return ""
+	}
+	token := m.thumbnailURL(session, thumb)
+	if token == "" {
+		return ""
+	}
+	return "/api/v1/media/thumbnail/" + token
+}
+
+// publishEvent 把事件交给调用方（cmd 侧转成 SSE 广播）。
+func (m *Manager) publishEvent(event Event) {
+	if m.onEvent == nil {
+		return
+	}
+	m.onEvent(event)
 }
 
 // publishTaskUpdate 读取任务最新状态并广播整条记录，前端直接 upsert。
-func (m *downloadManager) publishTaskUpdate(id uint) {
+func (m *Manager) publishTaskUpdate(id uint) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return
@@ -153,20 +185,15 @@ func (m *downloadManager) publishTaskUpdate(id uint) {
 	if err != nil {
 		return
 	}
-	m.hub.Publish(server.DownloadEvent{Type: "task.update", Data: m.snapshot(task)})
+	m.publishEvent(Event{Type: EventTaskUpdate, Task: m.snapshot(task)})
 }
 
 // publishProgress 广播一条轻量进度；前端只更新 offset/speed。
-func (m *downloadManager) publishProgress(id uint, offset, speed, size int64) {
-	m.hub.Publish(server.DownloadEvent{Type: "task.progress", Data: map[string]any{
-		"id":     id,
-		"offset": offset,
-		"speed":  speed,
-		"size":   size,
-	}})
+func (m *Manager) publishProgress(id uint, offset, speed, size int64) {
+	m.publishEvent(Event{Type: EventTaskProgress, ID: id, Offset: offset, Speed: speed, Size: size})
 }
 
-func (m *downloadManager) worker() {
+func (m *Manager) worker() {
 	defer m.wg.Done()
 	for {
 		select {
@@ -179,7 +206,7 @@ func (m *downloadManager) worker() {
 }
 
 // enqueue 把任务放进等待队列；队列会阻塞，直到有空位或服务停止。
-func (m *downloadManager) enqueue(id uint) {
+func (m *Manager) enqueue(id uint) {
 	select {
 	case m.queue <- id:
 	case <-m.ctx.Done():
@@ -187,8 +214,8 @@ func (m *downloadManager) enqueue(id uint) {
 }
 
 // create 解析链接、创建任务并立即入队。
-func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateRequest) (server.DownloadCreateResponse, error) {
-	resp := server.DownloadCreateResponse{}
+func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, error) {
+	resp := CreateResult{}
 
 	db, err := utils.OpenDatabase()
 	if err != nil {
@@ -202,7 +229,7 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 		return resp, err
 	}
 	if !ok {
-		return resp, fmt.Errorf("%w：先执行 account switch <账号ID>", server.ErrNoCurrentAccount)
+		return resp, fmt.Errorf("%w：先执行 account switch <账号ID>", ErrNoAccount)
 	}
 	account, err := service.Get(accountID)
 	if err != nil {
@@ -210,11 +237,11 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 	}
 	if account.Kind != database.AccountKindMTProto {
 		return resp, fmt.Errorf("%w：账号 #%d 是 %s，下载暂只支持 mtproto",
-			server.ErrNoCurrentAccount, accountID, account.Kind)
+			ErrNoAccount, accountID, account.Kind)
 	}
 	if !utils.FileExists(account.SessionPath) {
 		return resp, fmt.Errorf("%w：账号 #%d 的 session 文件不存在，请重新登录",
-			server.ErrAccountNoSession, accountID)
+			ErrNoSession, accountID)
 	}
 
 	proxy, err := config.NewStore(db).Proxy()
@@ -232,7 +259,7 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 	rawByKey := make(map[string]string, len(parsed))
 	for _, result := range parsed {
 		if result.Err != nil {
-			resp.Failed = append(resp.Failed, server.DownloadFailure{
+			resp.Failed = append(resp.Failed, Failure{
 				Link:  result.Raw,
 				Error: result.Err.Error(),
 			})
@@ -249,12 +276,12 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 		if len(resp.Failed) > 0 {
 			return resp, nil
 		}
-		return resp, fmt.Errorf("%w：没有解析出可下载的链接", server.ErrDownloadConflict)
+		return resp, fmt.Errorf("%w：没有解析出可下载的链接", ErrConflict)
 	}
 
-	timeout := previewBaseTimeout + time.Duration(len(targets))*previewPerLink
-	if timeout > previewMaxTimeout {
-		timeout = previewMaxTimeout
+	timeout := resolveBaseTimeout + time.Duration(len(targets))*resolvePerLink
+	if timeout > resolveMaxTimeout {
+		timeout = resolveMaxTimeout
 	}
 	resolveCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -264,13 +291,13 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 		if errors.Is(err, context.DeadlineExceeded) {
 			return resp, err
 		}
-		return resp, fmt.Errorf("%w: %v", server.ErrPreviewFailed, err)
+		return resp, fmt.Errorf("%w: %v", ErrPreviewFailed, err)
 	}
 
 	for _, result := range results {
 		raw := result.Target.Raw
 		if result.Err != nil {
-			resp.Failed = append(resp.Failed, server.DownloadFailure{Link: raw, Error: result.Err.Error()})
+			resp.Failed = append(resp.Failed, Failure{Link: raw, Error: result.Err.Error()})
 			continue
 		}
 
@@ -280,7 +307,7 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 			medias = []*mtproto.Media{result.Media}
 		}
 		if len(medias) == 0 {
-			resp.Skipped = append(resp.Skipped, server.DownloadSkip{Link: raw, Reason: "该消息没有可下载的媒体"})
+			resp.Skipped = append(resp.Skipped, Skip{Link: raw, Reason: "该消息没有可下载的媒体"})
 			continue
 		}
 
@@ -290,7 +317,7 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 				link = raw
 			}
 			if !media.Downloadable {
-				resp.Skipped = append(resp.Skipped, server.DownloadSkip{Link: link, Reason: "超过当前账号的单文件上限"})
+				resp.Skipped = append(resp.Skipped, Skip{Link: link, Reason: "超过当前账号的单文件上限"})
 				continue
 			}
 			messageID := media.MessageID
@@ -300,13 +327,13 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 			thumbnailURL := ""
 			thumbKey := ""
 			if media.Thumb != nil {
-				thumbnailURL = "/api/v1/media/thumbnail/" + server.RegisterThumbnail(session, *media.Thumb)
+				thumbnailURL = m.mediaURL(session, *media.Thumb)
 				thumbKey = thumbcache.Key(*media.Thumb)
 			}
 			previewURL := ""
 			previewKey := ""
 			if media.Preview != nil {
-				previewURL = "/api/v1/media/thumbnail/" + server.RegisterThumbnail(session, *media.Preview)
+				previewURL = m.mediaURL(session, *media.Preview)
 				previewKey = thumbcache.Key(*media.Preview)
 			}
 
@@ -329,7 +356,7 @@ func (m *downloadManager) create(ctx context.Context, req server.DownloadCreateR
 			}
 			created, err := db.CreateDownloadTask(task)
 			if err != nil {
-				resp.Failed = append(resp.Failed, server.DownloadFailure{Link: link, Error: err.Error()})
+				resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
 				continue
 			}
 			if created {
@@ -353,88 +380,88 @@ var taskThumbnailSlots = make(chan struct{}, 3)
 // 优先读 <数据目录>/thumbnail/ 里的文件缓存：键在创建任务时算好，
 // 与进程、token 无关，重启后仍然可用。缓存缺失时重新解析消息、
 // 下载封面并写盘，同时把键补进数据库，后续请求不再联网。
-func (m *downloadManager) thumbnail(ctx context.Context, id uint) (server.MediaThumbnail, error) {
+func (m *Manager) Thumbnail(ctx context.Context, id uint) ([]byte, error) {
 	task, err := loadTask(id)
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 	if data, ok := thumbcache.Get(task.ThumbKey); ok {
-		return server.MediaThumbnail{Data: data, ContentType: "image/jpeg"}, nil
+		return data, nil
 	}
 
 	select {
 	case taskThumbnailSlots <- struct{}{}:
 		defer func() { <-taskThumbnailSlots }()
 	case <-ctx.Done():
-		return server.MediaThumbnail{}, ctx.Err()
+		return nil, ctx.Err()
 	}
 
 	// 等锁期间可能已有别的请求写好缓存或补了键。
 	task, err = loadTask(id)
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 	if data, ok := thumbcache.Get(task.ThumbKey); ok {
-		return server.MediaThumbnail{Data: data, ContentType: "image/jpeg"}, nil
+		return data, nil
 	}
 
 	session, err := taskSession()
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 	parsed := link.ParseAll([]string{task.Link})
 	if len(parsed) != 1 || parsed[0].Err != nil {
-		return server.MediaThumbnail{}, server.ErrThumbnailNotFound
+		return nil, ErrThumbnailNotFound
 	}
 
 	resolveCtx, cancelResolve := context.WithTimeout(ctx, downloadResolveTimeout)
 	results, err := session.ResolveLinks(resolveCtx, []link.Target{parsed[0].Target})
 	cancelResolve()
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 	if len(results) != 1 || results[0].Err != nil {
-		return server.MediaThumbnail{}, server.ErrThumbnailNotFound
+		return nil, ErrThumbnailNotFound
 	}
 
 	media := pickTaskMedia(results[0], task.MessageID)
 	if media == nil {
-		return server.MediaThumbnail{}, server.ErrThumbnailNotFound
+		return nil, ErrThumbnailNotFound
 	}
 	thumb := media.Thumb
 	if thumb == nil {
 		thumb = media.Preview
 	}
 	if thumb == nil {
-		return server.MediaThumbnail{}, server.ErrThumbnailNotFound
+		return nil, ErrThumbnailNotFound
 	}
 
 	// 历史任务没有登记键，解析后先看同一张图是否已被预览页缓存。
 	key := thumbcache.Key(*thumb)
 	if data, ok := thumbcache.Get(key); ok {
 		m.saveThumbKey(id, key)
-		return server.MediaThumbnail{Data: data, ContentType: "image/jpeg"}, nil
+		return data, nil
 	}
 
-	fetchCtx, cancelFetch := context.WithTimeout(ctx, server.ThumbnailTimeout)
+	fetchCtx, cancelFetch := context.WithTimeout(ctx, taskThumbnailTimeout)
 	defer cancelFetch()
-	fetcher, err := server.ThumbnailFetcher(fetchCtx, session)
+	fetcher, err := mtproto.SharedThumbnailFetcher(fetchCtx, session)
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 	data, err := fetcher.Download(fetchCtx, *thumb)
 	if err != nil {
-		return server.MediaThumbnail{}, err
+		return nil, err
 	}
 
 	// 写盘失败不影响本次返回，下次请求会重试。
 	_ = thumbcache.Put(key, data)
 	m.saveThumbKey(id, key)
-	return server.MediaThumbnail{Data: data, ContentType: "image/jpeg"}, nil
+	return data, nil
 }
 
 // saveThumbKey 把缓存键写回任务；失败只影响下次是否重新解析。
-func (m *downloadManager) saveThumbKey(id uint, key string) {
+func (m *Manager) saveThumbKey(id uint, key string) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return
@@ -454,7 +481,7 @@ func loadTask(id uint) (database.DownloadTask, error) {
 	task, err := db.GetDownloadTask(id)
 	if err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return database.DownloadTask{}, server.ErrDownloadNotFound
+			return database.DownloadTask{}, ErrNotFound
 		}
 		return database.DownloadTask{}, err
 	}
@@ -480,7 +507,7 @@ func pickTaskMedia(result mtproto.LinkResult, messageID int) *mtproto.Media {
 }
 
 // list 返回任务列表，运行中的任务用内存里的实时进度覆盖。
-func (m *downloadManager) list(ctx context.Context, query server.DownloadListQuery) ([]server.DownloadTask, error) {
+func (m *Manager) List(ctx context.Context, query ListQuery) ([]Task, error) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return nil, fmt.Errorf("打开数据库: %w", err)
@@ -492,7 +519,7 @@ func (m *downloadManager) list(ctx context.Context, query server.DownloadListQue
 		return nil, err
 	}
 
-	out := make([]server.DownloadTask, 0, len(tasks))
+	out := make([]Task, 0, len(tasks))
 	for _, task := range tasks {
 		out = append(out, m.snapshot(task))
 	}
@@ -500,25 +527,25 @@ func (m *downloadManager) list(ctx context.Context, query server.DownloadListQue
 }
 
 // get 返回单个任务，带运行中的实时进度。
-func (m *downloadManager) get(ctx context.Context, id uint) (server.DownloadTask, error) {
+func (m *Manager) Get(ctx context.Context, id uint) (Task, error) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
-		return server.DownloadTask{}, fmt.Errorf("打开数据库: %w", err)
+		return Task{}, fmt.Errorf("打开数据库: %w", err)
 	}
 	defer db.Close()
 
 	task, err := db.GetDownloadTask(id)
 	if err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return server.DownloadTask{}, server.ErrDownloadNotFound
+			return Task{}, ErrNotFound
 		}
-		return server.DownloadTask{}, err
+		return Task{}, err
 	}
 	return m.snapshot(task), nil
 }
 
 // control 执行 pause / resume / retry。
-func (m *downloadManager) control(ctx context.Context, id uint, action string) (server.DownloadTask, error) {
+func (m *Manager) Control(ctx context.Context, id uint, action string) (Task, error) {
 	switch action {
 	case "pause":
 		return m.pause(id)
@@ -527,27 +554,27 @@ func (m *downloadManager) control(ctx context.Context, id uint, action string) (
 	case "retry":
 		return m.resume(id, true)
 	default:
-		return server.DownloadTask{}, fmt.Errorf("%w：未知操作 %q", server.ErrDownloadConflict, action)
+		return Task{}, fmt.Errorf("%w：未知操作 %q", ErrConflict, action)
 	}
 }
 
 // pause 取消运行中的任务；等待中的任务直接标记为暂停。
-func (m *downloadManager) pause(id uint) (server.DownloadTask, error) {
+func (m *Manager) pause(id uint) (Task, error) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
-		return server.DownloadTask{}, fmt.Errorf("打开数据库: %w", err)
+		return Task{}, fmt.Errorf("打开数据库: %w", err)
 	}
 	defer db.Close()
 
 	task, err := db.GetDownloadTask(id)
 	if err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return server.DownloadTask{}, server.ErrDownloadNotFound
+			return Task{}, ErrNotFound
 		}
-		return server.DownloadTask{}, err
+		return Task{}, err
 	}
 	if task.Status != database.DownloadStatusRunning && task.Status != database.DownloadStatusPending {
-		return server.DownloadTask{}, fmt.Errorf("%w：只有运行中或等待中的任务可以暂停", server.ErrDownloadConflict)
+		return Task{}, fmt.Errorf("%w：只有运行中或等待中的任务可以暂停", ErrConflict)
 	}
 
 	m.mu.Lock()
@@ -564,33 +591,33 @@ func (m *downloadManager) pause(id uint) (server.DownloadTask, error) {
 	}
 
 	if err := db.SetDownloadPaused(id, ""); err != nil {
-		return server.DownloadTask{}, err
+		return Task{}, err
 	}
 	m.publishTaskUpdate(id)
-	return m.get(context.Background(), id)
+	return m.Get(context.Background(), id)
 }
 
 // resume 把暂停（或失败重试）的任务重新入队。
-func (m *downloadManager) resume(id uint, retry bool) (server.DownloadTask, error) {
+func (m *Manager) resume(id uint, retry bool) (Task, error) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
-		return server.DownloadTask{}, fmt.Errorf("打开数据库: %w", err)
+		return Task{}, fmt.Errorf("打开数据库: %w", err)
 	}
 	defer db.Close()
 
 	task, err := db.GetDownloadTask(id)
 	if err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return server.DownloadTask{}, server.ErrDownloadNotFound
+			return Task{}, ErrNotFound
 		}
-		return server.DownloadTask{}, err
+		return Task{}, err
 	}
 	if retry {
 		if task.Status != database.DownloadStatusFailed {
-			return server.DownloadTask{}, fmt.Errorf("%w：只有失败的任务可以重试", server.ErrDownloadConflict)
+			return Task{}, fmt.Errorf("%w：只有失败的任务可以重试", ErrConflict)
 		}
 	} else if task.Status != database.DownloadStatusPaused {
-		return server.DownloadTask{}, fmt.Errorf("%w：只有暂停的任务可以恢复", server.ErrDownloadConflict)
+		return Task{}, fmt.Errorf("%w：只有暂停的任务可以恢复", ErrConflict)
 	}
 
 	if err := db.UpdateDownloadTask(id, map[string]any{
@@ -598,15 +625,15 @@ func (m *downloadManager) resume(id uint, retry bool) (server.DownloadTask, erro
 		"error":  "",
 		"speed":  0,
 	}); err != nil {
-		return server.DownloadTask{}, err
+		return Task{}, err
 	}
 	m.publishTaskUpdate(id)
 	m.enqueue(id)
-	return m.get(context.Background(), id)
+	return m.Get(context.Background(), id)
 }
 
 // remove 删除任务记录，可选删除已下载文件与 .part 临时文件。
-func (m *downloadManager) remove(id uint, deleteFile bool) error {
+func (m *Manager) Remove(id uint, deleteFile bool) error {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return fmt.Errorf("打开数据库: %w", err)
@@ -616,7 +643,7 @@ func (m *downloadManager) remove(id uint, deleteFile bool) error {
 	task, err := db.GetDownloadTask(id)
 	if err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return server.ErrDownloadNotFound
+			return ErrNotFound
 		}
 		return err
 	}
@@ -641,14 +668,11 @@ func (m *downloadManager) remove(id uint, deleteFile bool) error {
 
 	if err := db.DeleteDownloadTask(id); err != nil {
 		if errors.Is(err, database.ErrDownloadNotFound) {
-			return server.ErrDownloadNotFound
+			return ErrNotFound
 		}
 		return err
 	}
-	m.hub.Publish(server.DownloadEvent{
-		Type: "task.deleted",
-		Data: map[string]any{"id": id},
-	})
+	m.publishEvent(Event{Type: EventTaskDeleted, ID: id})
 
 	// .part 永远清理；最终文件只在 delete_file=true 时删除。
 	if task.SavePath != "" {
@@ -660,30 +684,9 @@ func (m *downloadManager) remove(id uint, deleteFile bool) error {
 	return nil
 }
 
-// snapshot 把数据库任务转换成接口结构，并叠加运行中的实时进度。
-func (m *downloadManager) snapshot(task database.DownloadTask) server.DownloadTask {
-	out := server.DownloadTask{
-		ID:           task.ID,
-		Link:         task.Link,
-		AccountID:    task.AccountID,
-		ChatID:       task.ChatID,
-		ChatTitle:    task.ChatTitle,
-		MessageID:    task.MessageID,
-		FileName:     task.FileName,
-		FileSize:     task.FileSize,
-		Kind:         task.Kind,
-		MIME:         task.MIME,
-		Status:       task.Status,
-		Offset:       task.Offset,
-		Speed:        task.Speed,
-		Error:        task.Error,
-		SavePath:     task.SavePath,
-		Overwrite:    task.Overwrite,
-		ThumbnailURL: task.ThumbnailURL,
-		PreviewURL:   task.PreviewURL,
-		CreatedAt:    task.CreatedAt.Unix(),
-		UpdatedAt:    task.UpdatedAt.Unix(),
-	}
+// snapshot 把数据库任务与内存里的实时进度合成一条可展示状态。
+func (m *Manager) snapshot(task database.DownloadTask) Task {
+	out := Task{Row: task, Offset: task.Offset, Speed: task.Speed}
 
 	m.mu.Lock()
 	run := m.runs[task.ID]
@@ -693,7 +696,6 @@ func (m *downloadManager) snapshot(task database.DownloadTask) server.DownloadTa
 	// done 事件会被改写成 running%100，前端要等下一次轮询才知道已完成。
 	if run != nil && task.Status == database.DownloadStatusRunning {
 		offset, speed := run.progress()
-		out.Status = database.DownloadStatusRunning
 		out.Offset = offset
 		out.Speed = speed
 	}
@@ -701,7 +703,7 @@ func (m *downloadManager) snapshot(task database.DownloadTask) server.DownloadTa
 }
 
 // execute 执行一条任务：重新解析消息拿最新的文件引用，然后下载。
-func (m *downloadManager) execute(id uint) {
+func (m *Manager) execute(id uint) {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return
@@ -802,38 +804,43 @@ func (m *downloadManager) execute(id uint) {
 		return
 	}
 
-	results, err := session.DownloadMedia(runCtx, []mtproto.MediaJob{{
-		ChatTitle: task.ChatTitle,
-		FileName:  task.FileName,
-		Size:      task.FileSize,
-		Media:     media,
-	}}, mtproto.DownloadOptions{
-		RootDir:     m.rootDir,
+	runner := runner.Runner{
+		Session: session,
+		RootDir: m.rootDir,
+		// 一个任务就是一个文件：并发交给队列控制，这里固定 1。
 		Concurrency: 1,
 		Threads:     downloadThreads,
 		PoolSize:    downloadPoolSize,
 		Force:       task.Overwrite,
 		Overwrite:   task.Overwrite,
-		OnStart: func(_ mtproto.MediaJob, plan downloadsvc.Plan) {
-			run.setOffset(plan.Offset)
-			_ = m.updateTask(id, map[string]any{
-				"save_path": plan.FinalPath,
-				"offset":    plan.Offset,
-			})
-			m.publishTaskUpdate(id)
-		},
-		OnProgress: func(_ mtproto.MediaJob, done, _ int64) {
-			run.observe(done)
-			if run.shouldPersist() {
-				offset, speed := run.progress()
+		Hooks: runner.Hooks{
+			OnStart: func(_ mtproto.MediaJob, plan downloadsvc.Plan) {
+				run.setOffset(plan.Offset)
 				_ = m.updateTask(id, map[string]any{
-					"offset": offset,
-					"speed":  speed,
+					"save_path": plan.FinalPath,
+					"offset":    plan.Offset,
 				})
-				m.publishProgress(id, offset, speed, run.sizeValue())
-			}
+				m.publishTaskUpdate(id)
+			},
+			OnProgress: func(_ mtproto.MediaJob, done, _ int64) {
+				run.observe(done)
+				if run.shouldPersist() {
+					offset, speed := run.progress()
+					_ = m.updateTask(id, map[string]any{
+						"offset": offset,
+						"speed":  speed,
+					})
+					m.publishProgress(id, offset, speed, run.sizeValue())
+				}
+			},
 		},
-	})
+	}
+	results, err := runner.Download(runCtx, []mtproto.MediaJob{{
+		ChatTitle: task.ChatTitle,
+		FileName:  task.FileName,
+		Size:      task.FileSize,
+		Media:     media,
+	}})
 	if err != nil {
 		fail(friendlyTaskError(err))
 		return
@@ -874,7 +881,7 @@ func (m *downloadManager) execute(id uint) {
 }
 
 // pauseAfterCancel 在任务被取消（暂停/删除/停止服务）后落库状态。
-func (m *downloadManager) pauseAfterCancel(id uint, run *downloadRun) {
+func (m *Manager) pauseAfterCancel(id uint, run *downloadRun) {
 	if run.isDeleted() {
 		return
 	}
@@ -892,7 +899,7 @@ func (m *downloadManager) pauseAfterCancel(id uint, run *downloadRun) {
 }
 
 // updateTask 更新任务字段；任务已被删除时忽略。
-func (m *downloadManager) updateTask(id uint, fields map[string]any) error {
+func (m *Manager) updateTask(id uint, fields map[string]any) error {
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return err

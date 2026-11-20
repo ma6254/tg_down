@@ -1,16 +1,15 @@
-package serve
+package server
 
 import (
 	"reflect"
 	"testing"
 
 	"github.com/ma6254/tg_down/internal/link"
-	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
 
-// TestBuildPreviewItemsAlbum 确认相册媒体会映射为 medias，并带单条消息链接。
-func TestBuildPreviewItemsAlbum(t *testing.T) {
+// TestPreviewItemsAlbum 确认相册媒体会映射为 medias，并带单条消息链接。
+func TestPreviewItemsAlbum(t *testing.T) {
 	results := []mtproto.LinkResult{{
 		Target:    link.Target{Raw: "https://t.me/AV_mys/8074"},
 		Chat:      mtproto.Peer{Kind: mtproto.PeerKindChannel, ID: 1, Title: "相册", Username: "AV_mys"},
@@ -26,7 +25,7 @@ func TestBuildPreviewItemsAlbum(t *testing.T) {
 		},
 	}}
 
-	items := buildPreviewItems(results, false, mtproto.Session{})
+	items := NewPreviewItems(results, false, mtproto.Session{})
 	if len(items) != 1 {
 		t.Fatalf("items 数量 = %d", len(items))
 	}
@@ -41,8 +40,8 @@ func TestBuildPreviewItemsAlbum(t *testing.T) {
 	}
 }
 
-// TestBuildPreviewItemsEntities 确认正文实体会原样映射到接口结构。
-func TestBuildPreviewItemsEntities(t *testing.T) {
+// TestPreviewItemsEntities 确认正文实体会原样映射到接口结构。
+func TestPreviewItemsEntities(t *testing.T) {
 	results := []mtproto.LinkResult{{
 		Target:    link.Target{Raw: "https://t.me/a/1", Username: "a", MessageID: 1},
 		Chat:      mtproto.Peer{Kind: mtproto.PeerKindChannel, ID: 1, Title: "频道"},
@@ -55,12 +54,12 @@ func TestBuildPreviewItemsEntities(t *testing.T) {
 		},
 	}}
 
-	items := buildPreviewItems(results, false, mtproto.Session{})
+	items := NewPreviewItems(results, false, mtproto.Session{})
 	if len(items) != 1 {
 		t.Fatalf("items 数量 = %d，期望 1", len(items))
 	}
 
-	want := []server.PreviewEntity{
+	want := []PreviewEntity{
 		{Type: "bold", Offset: 0, Length: 1},
 		{Type: "pre", Offset: 2, Length: 4, Language: "go"},
 		{Type: "custom_emoji", Offset: 1, Length: 1, DocumentID: 42},
@@ -70,8 +69,8 @@ func TestBuildPreviewItemsEntities(t *testing.T) {
 	}
 }
 
-// TestBuildPreviewItemsPreviewURL 确认封面与正文大图各自拿到独立的 token 地址。
-func TestBuildPreviewItemsPreviewURL(t *testing.T) {
+// TestPreviewItemsPreviewURL 确认封面与正文大图各自拿到独立的 token 地址。
+func TestPreviewItemsPreviewURL(t *testing.T) {
 	results := []mtproto.LinkResult{{
 		Target:    link.Target{Raw: "https://t.me/a/1", Username: "a", MessageID: 1},
 		Chat:      mtproto.Peer{Kind: mtproto.PeerKindChannel, ID: 1, Title: "频道"},
@@ -85,7 +84,7 @@ func TestBuildPreviewItemsPreviewURL(t *testing.T) {
 		},
 	}}
 
-	items := buildPreviewItems(results, false, mtproto.Session{})
+	items := NewPreviewItems(results, false, mtproto.Session{})
 	if len(items) != 1 || items[0].Media == nil {
 		t.Fatalf("items = %+v", items)
 	}
@@ -95,5 +94,28 @@ func TestBuildPreviewItemsPreviewURL(t *testing.T) {
 	}
 	if media.ThumbnailURL == media.PreviewURL {
 		t.Errorf("封面与大图不应共用同一个 token: %q", media.PreviewURL)
+	}
+}
+
+// TestPreviewResponseSummary 确认统计口径：成功、失败、无媒体、展开。
+func TestPreviewResponseSummary(t *testing.T) {
+	items := []PreviewItem{
+		{Link: "a", Error: "boom"},
+		{Link: "b", Media: &PreviewMedia{}},
+		{Link: "c"},
+		{Link: "d", Expanded: true, Media: &PreviewMedia{}},
+	}
+	resp := NewPreviewResponse(items, 3)
+	if resp.Summary.Total != 4 || resp.Summary.OK != 3 || resp.Summary.Failed != 1 {
+		t.Errorf("summary = %+v", resp.Summary)
+	}
+	if resp.Summary.NoMedia != 1 {
+		t.Errorf("no_media = %d，期望 1", resp.Summary.NoMedia)
+	}
+	if resp.Summary.Expanded != 1 {
+		t.Errorf("expanded = %d，期望 1", resp.Summary.Expanded)
+	}
+	if resp.Summary.SkippedLinks != 3 {
+		t.Errorf("skipped_links = %d，期望 3", resp.Summary.SkippedLinks)
 	}
 }

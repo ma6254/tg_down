@@ -5,6 +5,10 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"time"
+
+	"github.com/ma6254/tg_down/internal/database"
+	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
 
 // 账号相关业务层可以返回的哨兵错误，handler 据此选择状态码。
@@ -15,6 +19,8 @@ var (
 	ErrAccountNoSession = errors.New("账号的 session 文件不可用")
 	// ErrAccountLiveFailed 表示联网查询失败（网络不可达、Telegram 侧报错、session 已失效等）。
 	ErrAccountLiveFailed = errors.New("联网查询失败")
+	// ErrAccountDesktopLogout 表示桌面导入的账号不能注销，只能删除本地副本。
+	ErrAccountDesktopLogout = errors.New("桌面导入的账号不能注销")
 )
 
 // Account 是账号列表项。
@@ -211,4 +217,77 @@ func accountIDFromPath(r *http.Request) (id int64, ok bool) {
 		return 0, false
 	}
 	return id, true
+}
+
+// NewAccount 把账号记录转换成列表项。
+//
+// 只暴露展示需要的字段：session 路径等本地信息不外传。
+func NewAccount(row database.Account, current bool) Account {
+	return Account{
+		ID:         row.ID,
+		Kind:       row.Kind,
+		Source:     row.Source,
+		Name:       row.Name,
+		Username:   row.Username,
+		Phone:      row.Phone,
+		State:      row.State,
+		LastError:  row.LastError,
+		TelegramID: row.TelegramIDValue(),
+		CreatedAt:  row.CreatedAt.Unix(),
+		Current:    current,
+	}
+}
+
+// NewAccounts 批量转换；hasCurrent 为 false 时不标记当前账号。
+func NewAccounts(rows []database.Account, currentID int64, hasCurrent bool) []Account {
+	out := make([]Account, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, NewAccount(row, hasCurrent && row.ID == currentID))
+	}
+	return out
+}
+
+// NewAccountDetail 在列表项之上补充更新时间与 session 文件可用性。
+func NewAccountDetail(row database.Account, current, sessionPresent bool) AccountDetail {
+	detail := AccountDetail{
+		Account:        NewAccount(row, current),
+		SessionPresent: sessionPresent,
+	}
+	if !row.UpdatedAt.IsZero() {
+		detail.UpdatedAt = row.UpdatedAt.Unix()
+	}
+	return detail
+}
+
+// NewAccountLiveInfo 把联网查询结果转换成接口结构。
+//
+// 查询时间在这里取，调用方不用自己补 FetchedAt。
+func NewAccountLiveInfo(live *mtproto.LiveInfo) AccountLiveInfo {
+	info := AccountLiveInfo{
+		Devices:   NewProbeDevices(live.Devices),
+		FetchedAt: time.Now().Unix(),
+	}
+	// 前端按数组遍历，空列表要返回 [] 而不是 null。
+	if info.Devices == nil {
+		info.Devices = []ProbeDevice{}
+	}
+	if live.Account != nil {
+		info.UserID = live.Account.ID
+		info.Name = live.Account.DisplayName()
+		info.Username = live.Account.Username
+		info.Phone = live.Account.Phone
+		info.Bot = live.Account.Bot
+		info.Premium = live.Account.Premium
+	}
+	if live.Profile != nil {
+		info.About = live.Profile.About
+		if live.Profile.HasBirthday {
+			info.Birthday = &AccountBirthday{
+				Day:   live.Profile.BirthDay,
+				Month: live.Profile.BirthMonth,
+				Year:  live.Profile.BirthYear,
+			}
+		}
+	}
+	return info
 }
