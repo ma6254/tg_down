@@ -14,6 +14,9 @@ func (s *Server) routes() *http.ServeMux {
 	// 健康检查：前端启动时也用它确认后端已就绪。
 	mux.HandleFunc("GET /api/v1/health", s.handleHealth)
 
+	// 系统信息：编译时间、git 提交与运行环境。
+	mux.HandleFunc("GET /api/v1/system", s.handleSystemInfo)
+
 	// 登录探测：等价于 account login --probe（读取本机 Telegram Desktop 的 tdata）。
 	mux.HandleFunc("POST /api/v1/accounts/probe", s.handleLoginProbe)
 

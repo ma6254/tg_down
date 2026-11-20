@@ -1,6 +1,7 @@
 package login
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -118,15 +119,6 @@ func TestLoginOptionsValidate(t *testing.T) {
 				return o
 			},
 			wantErr: "--app",
-		},
-		{
-			name: "mtproto session 目录为空",
-			opts: func() *loginOptions {
-				o := validMTProto()
-				o.SessionDir = " "
-				return o
-			},
-			wantErr: "session-dir",
 		},
 		{
 			name: "botapi 合法",
@@ -315,7 +307,55 @@ func TestNewLoginOptionsDefaults(t *testing.T) {
 	if o.App != mtproto.AppDesktop {
 		t.Errorf("App = %q，期望 %q", o.App, mtproto.AppDesktop)
 	}
-	if o.SessionDir != "./sessions" {
-		t.Errorf("SessionDir = %q", o.SessionDir)
+	// session 目录留空，执行时解析到数据目录下（见 TestSessionDirDefault）。
+	if o.SessionDir != "" {
+		t.Errorf("SessionDir = %q，期望留空", o.SessionDir)
+	}
+}
+
+// TestSessionDirDefault 确认 session 默认放在数据目录里，且目录会被创建。
+func TestSessionDirDefault(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
+
+	o := newLoginOptions()
+	dir, err := o.sessionDir()
+	if err != nil {
+		t.Fatalf("sessionDir: %v", err)
+	}
+	want := filepath.Join(home, "sessions")
+	if dir != want {
+		t.Errorf("sessionDir = %q，期望 %q", dir, want)
+	}
+	if info, err := os.Stat(dir); err != nil || !info.IsDir() {
+		t.Errorf("session 目录未创建: %v", err)
+	}
+	// 解析结果写回 SessionDir，后续 sessionPath 复用同一个目录。
+	if o.SessionDir != dir {
+		t.Errorf("SessionDir = %q，期望 %q", o.SessionDir, dir)
+	}
+	o.Phone = testPhone
+	if got := o.sessionPath(); got != filepath.Join(dir, "mtproto-"+digitsOnly(testPhone)+".json") {
+		t.Errorf("sessionPath = %q", got)
+	}
+
+	// 显式 --session-dir 优先，不受数据目录影响；同样解析成绝对路径。
+	explicit := &loginOptions{SessionDir: "./data/sessions"}
+	wantExplicit, err := filepath.Abs("./data/sessions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := explicit.sessionDir(); err != nil || got != wantExplicit {
+		t.Errorf("显式目录 = %q, %v，期望 %q", got, err, wantExplicit)
+	}
+
+	// 显式 --session 也解析成绝对路径，避免库里留下相对路径。
+	byFile := &loginOptions{SessionPath: filepath.Join("data", "x.json")}
+	gotPath, err := byFile.resolveSessionPath()
+	if err != nil {
+		t.Fatalf("resolveSessionPath: %v", err)
+	}
+	if !filepath.IsAbs(gotPath) {
+		t.Errorf("显式 session 路径 = %q，期望绝对路径", gotPath)
 	}
 }

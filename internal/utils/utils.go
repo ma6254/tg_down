@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -27,17 +29,59 @@ const DefaultNetworkTimeout = 30 * time.Second
 func OpenDatabase() (*database.DB, error) {
 	path, err := appdir.DBPath()
 	if err != nil {
-		return nil, err
+		return nil, dataDirError(err)
 	}
 	db, err := database.Open("sqlite", path)
 	if err != nil {
-		return nil, fmt.Errorf("打开数据库 %s: %w", path, err)
+		return nil, sqliteOpenError(path, fmt.Errorf("打开数据库 %s: %w", path, err))
 	}
 	if err := db.Install(); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("初始化数据库 %s: %w", path, err)
+		return nil, sqliteOpenError(path, fmt.Errorf("初始化数据库 %s: %w", path, err))
 	}
 	return db, nil
+}
+
+// dataDirError 给「建不了数据目录」补上可操作提示。
+//
+// 受限终端（沙箱）或安全软件（如 Windows Defender 的受控文件夹访问）
+// 都可能拒绝在用户目录下写文件；这和程序逻辑无关，换可写目录或放行即可。
+func dataDirError(err error) error {
+	if err == nil || !(errors.Is(err, os.ErrPermission) ||
+		strings.Contains(strings.ToLower(err.Error()), "access is denied")) {
+		return err
+	}
+	return fmt.Errorf("%w；无法写入用户目录：如果这是受限终端或沙箱，请在普通终端运行；"+
+		"如果用 TG_DOWN_HOME 指定了目录，请确认该目录可写", err)
+}
+
+// sqliteOpenError 给 SQLite 的「unable to open database file」补上可操作提示。
+//
+// 这个错误几乎总是「数据目录里无法新建文件」：目录只读、被安全软件拦截，
+// 或进程运行在受限沙箱里——SQLite 建库、建 WAL/回滚日志都要在同一目录写文件。
+func sqliteOpenError(path string, err error) error {
+	if err == nil || !strings.Contains(err.Error(), "unable to open database file") {
+		return err
+	}
+	return fmt.Errorf("%w；数据目录 %s 不可写：请检查目录权限与安全软件拦截"+
+		"（Windows 可查看「受控文件夹访问」），或用 TG_DOWN_HOME 指向可写目录", err, filepath.Dir(path))
+}
+
+// checkWritable 通过新建再删除一个临时文件，确认目录确实可写。
+//
+// Windows 上目录的「只读」属性并不可靠，权限问题往往要等 SQLite 建 WAL
+// 时才暴露成难懂的 CANTOPEN，所以启动时先探一次。
+func checkWritable(dir string) error {
+	probe, err := os.CreateTemp(dir, ".write-probe-*")
+	if err != nil {
+		return err
+	}
+	name := probe.Name()
+	if err := probe.Close(); err != nil {
+		_ = os.Remove(name)
+		return err
+	}
+	return os.Remove(name)
 }
 
 // ResolveProxy 从配置读取实际生效的代理：
@@ -61,9 +105,18 @@ func ResolveProxy() (string, error) {
 // 服务启动时先调它再监听：并发首个请求各自 AutoMigrate 会撞上迁移竞态，
 // 提前初始化也能让数据库错误在启动阶段就暴露。
 func PrepareDatabase() error {
+	path, err := appdir.DBPath()
+	if err != nil {
+		return err
+	}
+	// 先探一次目录可写：否则只读目录要等 SQLite 建 WAL 才报 CANTOPEN。
+	if err := checkWritable(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("数据目录 %s 不可写: %w", filepath.Dir(path), err)
+	}
+
 	db, err := OpenDatabase()
 	if err != nil {
-		return fmt.Errorf("初始化数据库: %w", err)
+		return err
 	}
 	if err := config.SyncTypes(db); err != nil {
 		_ = db.Close()

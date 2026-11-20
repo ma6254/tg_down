@@ -46,6 +46,26 @@ func EnsureDataDir() (string, error) {
 	return dir, nil
 }
 
+// SessionsDir 返回 session 文件的默认目录 <数据目录>/sessions，并确保它存在。
+//
+// session 文件等同于账号凭证，跟数据库、头像一起放在数据目录里，
+// 不再依赖启动时的工作目录；返回绝对路径，写进数据库后换目录启动也能找到。
+func SessionsDir() (string, error) {
+	dir, err := EnsureDataDir()
+	if err != nil {
+		return "", err
+	}
+	sessions := filepath.Join(dir, "sessions")
+	abs, err := filepath.Abs(sessions)
+	if err != nil {
+		return "", fmt.Errorf("解析 session 目录 %s: %w", sessions, err)
+	}
+	if err := os.MkdirAll(abs, 0o700); err != nil {
+		return "", fmt.Errorf("创建 session 目录 %s: %w", abs, err)
+	}
+	return abs, nil
+}
+
 // DBPath 返回 SQLite 数据文件路径，并确保所在目录存在。
 func DBPath() (string, error) {
 	dir, err := EnsureDataDir()

@@ -44,8 +44,15 @@ webembed/          go:embed 前端产物
 go run . --help                   # 查看全部命令与参数
 go run . version                  # 版本与构建信息
 go run . serve                    # 启动 HTTP 服务（127.0.0.1:22429）
-go build -o tg_down.exe .         # 构建
+
+python build.py                   # 构建 bin/tg_down[.exe]，注入版本 / 提交 / 编译时间
+python build.py --web --release   # 同时构建前端并打包 webembed/dist.tar.gz、去掉符号表
+go build -o tg_down.exe .         # 快速构建（版本信息为 dev / none / unknown）
 ```
+
+`build.py` 需要 Python 3.9+；`--web` 还会调用 `pnpm` 构建 `../tg_down_web`。
+构建信息会写进 `tg_down version` 与 `GET /api/v1/system`，交叉编译用
+`--os/--arch`（例如 `--os linux --arch arm64`）。
 
 启动后可访问 `http://127.0.0.1:22429/api/v1/health` 与 `/swagger/`；
 前端的 Web 界面尚未内嵌，开发期用 `../tg_down_web` 的 Vite 代理访问。
@@ -137,7 +144,7 @@ tg_down account login --probe-session
 | `--token` | Bot API token，形如 `123456789:AA...` |
 | `--code` | 登录验证码，留空则登录时交互输入 |
 | `--password` | 两步验证密码，留空则在需要时交互输入 |
-| `--session-dir` | session 存放目录，默认 `./sessions` |
+| `--session-dir` | session 存放目录，默认 `<数据目录>/sessions`（即 `~/.tg_down/sessions`） |
 | `--session` | 直接指定 session 文件，优先于按手机号推导 |
 | `--probe` | 探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录 |
 | `--probe-timeout` | 探测时连接 Telegram 的超时，默认 `30s` |
@@ -145,9 +152,10 @@ tg_down account login --probe-session
 | `--tdata` | Telegram Desktop 的 tdata 目录，留空自动查找 |
 | `--tdata-passcode` | Telegram Desktop 的本地密码（设置了才需要） |
 
-登录成功后 session 写入 `sessions/mtproto-<手机号数字>.json`，权限收紧到 `0600`。
-该文件等同于账号凭证，**不要提交或分享**（`.gitignore` 已忽略 `sessions/`）。重复登录会复用
-有效 session，直接打印当前账号。
+登录成功后 session 写入 `<数据目录>/sessions/mtproto-<手机号数字>.json`（默认 `~/.tg_down/sessions/`），
+权限收紧到 `0600`。该文件等同于账号凭证，**不要提交或分享**（`.gitignore` 已忽略 `sessions/`）。
+数据目录在用户主目录下，不随启动目录变化；需要换位置时用 `TG_DOWN_HOME` 或 `--session-dir`。
+重复登录会复用有效 session，直接打印当前账号。
 
 账号登记到数据库后，如果库里**只有一个账号**，会自动设为当前账号（`settings.current_account_id`），
 无需再执行 `account switch`；有多个账号时保持原有选择。
@@ -195,7 +203,7 @@ tg_down account login --probe --probe-timeout 30s
 
 说明：
 
-- 探测成功后：授权写入 `<session-dir>/mtproto-<手机号>.json`（文件已存在时保留原文件），
+- 探测成功后：授权写入 `<数据目录>/sessions/mtproto-<手机号>.json`（文件已存在时保留原文件），
   账号记录 upsert 到 `accounts` 表，随后可直接 `account list` / `account switch` 使用；
   如果导入后库里只有一个账号，会自动设为当前账号。
 - 网络超时默认 **30 秒**，用 `--probe-timeout` 调整；超时会提示检查 `http_proxy` 配置。
@@ -206,7 +214,8 @@ tg_down account login --probe --probe-timeout 30s
 
 ### 探测本工具自己的 session
 
-`--probe-session` 是另一个功能：检查 `sessions/` 下由本工具保存的 session 是否仍有效。
+`--probe-session` 是另一个功能：检查数据目录下 `sessions/`（默认 `~/.tg_down/sessions/`）里
+由本工具保存的 session 是否仍有效。
 
 ```bash
 tg_down account login --probe-session
@@ -215,7 +224,7 @@ tg_down account login --probe-session --phone +8613800000000
 
 输出 session 路径、登录状态、账号信息与已登录客户端；session 已失效时退出码仍为 0，
 只在状态里标「未授权」——那是探测结果，不是失败。session 定位顺序：
-`--session` → 按 `--phone` 推导 → `--session-dir` 下唯一的 `mtproto-*.json`。
+`--session` → 按 `--phone` 推导 → `<数据目录>/sessions` 下唯一的 `mtproto-*.json`。
 
 ### 查看与退出
 
@@ -253,7 +262,7 @@ $ tg_down account info --live
   手机号    +861****364
   状态      authed
   会员      否
-  session   ./sessions/mtproto-8613754320364.json
+  session   ~/.tg_down/sessions/mtproto-8613754320364.json
   创建时间  2026-11-19 00:10
   更新时间  2026-11-19 00:10
 
@@ -321,7 +330,8 @@ $ tg_down account list
 - 数据库使用纯 Go 驱动（`glebarez/sqlite` → `modernc.org/sqlite`），**不需要 CGO / gcc**。
 - `accounts` 表字段：`id / kind / name / phone / username / session_path / state / last_error / created_at / updated_at`。
 - `settings` 表字段：`key / value / updated_at`。
-- session 文件本身仍在 `--session-dir`（默认 `./sessions`）下，数据库只记录其路径；token、session 内容不写入数据库。
+- session 文件本身存放在 `<数据目录>/sessions`（默认 `~/.tg_down/sessions/`，可用 `--session-dir` 覆盖），
+  数据库只记录其路径；token、session 内容不写入数据库。
 
 ## 系统配置
 

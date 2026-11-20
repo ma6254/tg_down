@@ -3,6 +3,9 @@ package utils
 import (
 	"encoding/hex"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -252,5 +255,65 @@ func TestPrepareDatabase(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("默认配置缺少 %s: %+v", config.KeyHTTPProxyEnabled, entries)
+	}
+}
+
+// TestSqliteOpenError 确认 CANTOPEN 会补上「数据目录不可写」的可操作提示。
+func TestSqliteOpenError(t *testing.T) {
+	path := filepath.Join("home", ".tg_down", "data.db")
+	base := fmt.Errorf("初始化数据库 %s: %w", path, errors.New("unable to open database file (14)"))
+
+	got := sqliteOpenError(path, base)
+	if !strings.Contains(got.Error(), "不可写") {
+		t.Errorf("错误 = %q，期望包含不可写提示", got)
+	}
+	if !strings.Contains(got.Error(), filepath.Dir(path)) {
+		t.Errorf("错误 = %q，期望包含数据目录 %q", got, filepath.Dir(path))
+	}
+	// 原始错误要保留，调用方还能 errors.Is 判断。
+	if !errors.Is(got, base) {
+		t.Errorf("错误链被破坏: %v", got)
+	}
+
+	// 其他错误原样返回。
+	other := errors.New("boom")
+	if got := sqliteOpenError(path, other); got != other {
+		t.Errorf("无关错误被改写: %v", got)
+	}
+}
+
+// TestCheckWritable 确认可写目录探测成功且不留临时文件。
+func TestCheckWritable(t *testing.T) {
+	dir := t.TempDir()
+	if err := checkWritable(dir); err != nil {
+		t.Fatalf("可写目录探测失败: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("探测后应清理临时文件，实际 %+v", entries)
+	}
+
+	if err := checkWritable(filepath.Join(dir, "missing")); err == nil {
+		t.Error("不存在的目录应返回错误")
+	}
+}
+
+// TestDataDirError 确认权限类错误会补上「换终端或可写目录」的提示。
+func TestDataDirError(t *testing.T) {
+	denied := &os.PathError{Op: "mkdir", Path: `C:\Users\me\.tg_down`, Err: errors.New("Access is denied.")}
+	got := dataDirError(denied)
+	if !strings.Contains(got.Error(), "受限终端") {
+		t.Errorf("错误 = %q，期望包含受限终端提示", got)
+	}
+	if !errors.Is(got, denied) {
+		t.Errorf("错误链被破坏: %v", got)
+	}
+
+	other := errors.New("boom")
+	if got := dataDirError(other); got != other {
+		t.Errorf("无关错误被改写: %v", got)
 	}
 }

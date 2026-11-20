@@ -65,6 +65,37 @@
         }
       }
     },
+    "/api/v1/system": {
+      "get": {
+        "tags": [
+          "system"
+        ],
+        "summary": "系统信息",
+        "description": "返回编译期注入的版本、git 提交与编译时间，以及 Go 版本、运行平台与进程运行时长，用于确认部署的是哪个构建。",
+        "operationId": "getSystemInfo",
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {}
+        ],
+        "responses": {
+          "200": {
+            "description": "系统信息",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SystemInfo"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          }
+        }
+      }
+    },
     "/api/v1/accounts/probe": {
       "post": {
         "tags": [
@@ -1569,6 +1600,52 @@
           "version": {
             "type": "string",
             "example": "0.1.0"
+          },
+          "uptime_seconds": {
+            "type": "integer",
+            "format": "int64",
+            "example": 42
+          }
+        }
+      },
+      "SystemInfo": {
+        "type": "object",
+        "required": [
+          "version",
+          "commit",
+          "build_time",
+          "go_version",
+          "os",
+          "arch",
+          "uptime_seconds"
+        ],
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "语义化版本号；直接 go build 时为 dev。",
+            "example": "0.1.0"
+          },
+          "commit": {
+            "type": "string",
+            "description": "构建对应的 git 提交；未注入时为 none。",
+            "example": "e25dfdd"
+          },
+          "build_time": {
+            "type": "string",
+            "description": "编译时间，RFC3339；未注入时为 unknown。",
+            "example": "2026-11-20T15:00:00+08:00"
+          },
+          "go_version": {
+            "type": "string",
+            "example": "go1.27.1"
+          },
+          "os": {
+            "type": "string",
+            "example": "windows"
+          },
+          "arch": {
+            "type": "string",
+            "example": "amd64"
           },
           "uptime_seconds": {
             "type": "integer",

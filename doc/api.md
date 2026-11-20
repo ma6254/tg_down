@@ -39,6 +39,26 @@ GET /api/v1/health
 
 启用 token 后该接口同样要求 Bearer token；`uptime_seconds` 便于确认进程是否刚重启。
 
+### 系统信息
+
+```
+GET /api/v1/system
+→ 200 {
+  "version": "dev",
+  "commit": "none",
+  "build_time": "unknown",
+  "go_version": "go1.27.1",
+  "os": "windows",
+  "arch": "amd64",
+  "uptime_seconds": 123
+}
+```
+
+`version`、`commit` 与 `build_time` 由构建脚本通过 `-ldflags` 注入（直接 `go build` 时分别是
+`dev` / `none` / `unknown`），用于确认线上跑的是哪个构建、是否与预期提交一致；
+`go_version`、`os`、`arch` 是编译期运行环境，`uptime_seconds` 是进程已运行秒数。
+启用 token 后该接口同样要求 Bearer token。
+
 ## 客户端初始化
 
 没有匿名的 `/session` 探测接口；前端直接用 health 判断：
@@ -54,7 +74,8 @@ GET /api/v1/health
 ### 探测本机 Telegram Desktop
 
 等价于 `tg_down account login --probe`：读取本机 Telegram Desktop 的 tdata，
-用其中已有的授权逐个连接 Telegram 校验，默认把有效账号导入 `sessions/` 与数据库。
+用其中已有的授权逐个连接 Telegram 校验，默认把有效账号导入
+`<数据目录>/sessions/`（`~/.tg_down/sessions/`）与数据库。
 
 ```
 POST /api/v1/accounts/probe

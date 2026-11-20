@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/ma6254/tg_down/cmd/account/internal/store"
+	"github.com/ma6254/tg_down/internal/appdir"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
 
@@ -54,6 +55,8 @@ type loginOptions struct {
 
 // newLoginOptions 返回默认值：默认走 MTProto + desktop 内置应用，
 // 环境变量里的 api 凭据会覆盖内置应用。
+//
+// SessionDir 留空表示用数据目录下的 sessions（见 sessionDir）。
 func newLoginOptions() *loginOptions {
 	apiID, _ := strconv.Atoi(strings.TrimSpace(os.Getenv("TG_DOWN_API_ID")))
 	return &loginOptions{
@@ -61,7 +64,6 @@ func newLoginOptions() *loginOptions {
 		App:          mtproto.AppDesktop,
 		APIID:        apiID,
 		APIHash:      strings.TrimSpace(os.Getenv("TG_DOWN_API_HASH")),
-		SessionDir:   "./sessions",
 		ProbeTimeout: defaultNetworkTimeout,
 	}
 }
@@ -77,7 +79,7 @@ func (o *loginOptions) bind(fs *pflag.FlagSet) {
 	fs.IntVar(&o.APIID, "api-id", o.APIID, "自备 Telegram api_id（my.telegram.org），也可用环境变量 TG_DOWN_API_ID")
 	fs.StringVar(&o.APIHash, "api-hash", o.APIHash, "自备 Telegram api_hash，也可用环境变量 TG_DOWN_API_HASH")
 	fs.StringVar(&o.App, "app", o.App, "内置应用：desktop（Telegram Desktop 凭据，零配置）或 custom（配合 --api-id/--api-hash）")
-	fs.StringVar(&o.SessionDir, "session-dir", o.SessionDir, "session 文件存放目录")
+	fs.StringVar(&o.SessionDir, "session-dir", o.SessionDir, "session 文件存放目录，默认 <数据目录>/sessions")
 	fs.StringVar(&o.SessionPath, "session", o.SessionPath, "直接指定 session 文件（优先于 --phone/--session-dir 推导）")
 	fs.BoolVar(&o.Probe, "probe", o.Probe, "探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录")
 	fs.BoolVar(&o.ProbeSession, "probe-session", o.ProbeSession, "探测本工具自己保存的 session，不登录")
@@ -108,6 +110,9 @@ func (o *loginOptions) validate() error {
 		if o.Probe {
 			if o.Code != "" || o.Password != "" {
 				return errors.New("--probe 只读取 Telegram Desktop 的授权，不需要 --code / --password")
+			}
+			if o.SessionPath != "" {
+				return errors.New("--probe 从 tdata 导入授权，不能用 --session 指定文件")
 			}
 			return nil
 		}
@@ -152,14 +157,12 @@ func (o *loginOptions) validate() error {
 	return nil
 }
 
-// validateAPI 校验应用凭据与 session 目录，mtproto 与 probe 共用。
+// validateAPI 校验应用凭据，mtproto 与 probe 共用。
 //
 // 默认使用内置 desktop 应用，因此不再强制要求 api_id/api_hash；
 // 一旦提供了其中一个，就必须成对提供（视为自备应用）。
+// session 目录留空是合法的：执行时会解析成数据目录下的 sessions。
 func (o *loginOptions) validateAPI() error {
-	if o.SessionDir == "" {
-		return errors.New("--session-dir 不能为空")
-	}
 	if o.App == "" {
 		o.App = mtproto.AppDesktop
 	}
@@ -210,6 +213,29 @@ func (o *loginOptions) displayName() string {
 	return maskPhone(o.Phone)
 }
 
+// sessionDir 返回实际使用的 session 目录：--session-dir 优先，
+// 否则用数据目录下的 sessions（<TG_DOWN_HOME>/sessions）。
+//
+// 两条路径都会被解析成绝对路径：数据库里存的 session_path 不再依赖
+// 启动时的工作目录。解析结果写回 SessionDir，后续 sessionPath/导入都复用它。
+func (o *loginOptions) sessionDir() (string, error) {
+	if o.SessionDir == "" {
+		dir, err := appdir.SessionsDir()
+		if err != nil {
+			return "", err
+		}
+		o.SessionDir = dir
+		return dir, nil
+	}
+
+	abs, err := filepath.Abs(o.SessionDir)
+	if err != nil {
+		return "", fmt.Errorf("解析 session 目录 %s: %w", o.SessionDir, err)
+	}
+	o.SessionDir = abs
+	return abs, nil
+}
+
 // sessionPath 按手机号生成 session 文件路径，便于同机多账号共存。
 func (o *loginOptions) sessionPath() string {
 	return filepath.Join(o.SessionDir, "mtproto-"+digitsOnly(o.Phone)+".json")
@@ -219,15 +245,24 @@ func (o *loginOptions) sessionPath() string {
 // --session 优先，其次是 --phone 推导，最后在目录里找唯一一个 session。
 func (o *loginOptions) resolveSessionPath() (string, error) {
 	if o.SessionPath != "" {
-		return o.SessionPath, nil
+		abs, err := filepath.Abs(o.SessionPath)
+		if err != nil {
+			return "", fmt.Errorf("解析 session 文件 %s: %w", o.SessionPath, err)
+		}
+		return abs, nil
+	}
+
+	dir, err := o.sessionDir()
+	if err != nil {
+		return "", err
 	}
 	if o.Phone != "" {
 		return o.sessionPath(), nil
 	}
 
-	entries, err := os.ReadDir(o.SessionDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return "", fmt.Errorf("读取 session 目录 %s: %w", o.SessionDir, err)
+		return "", fmt.Errorf("读取 session 目录 %s: %w", dir, err)
 	}
 	var found []string
 	for _, entry := range entries {
@@ -236,12 +271,12 @@ func (o *loginOptions) resolveSessionPath() (string, error) {
 		}
 		name := entry.Name()
 		if strings.HasPrefix(name, "mtproto-") && strings.HasSuffix(name, ".json") {
-			found = append(found, filepath.Join(o.SessionDir, name))
+			found = append(found, filepath.Join(dir, name))
 		}
 	}
 	switch len(found) {
 	case 0:
-		return "", fmt.Errorf("session 目录 %s 下没有 session 文件，请先执行 account login", o.SessionDir)
+		return "", fmt.Errorf("session 目录 %s 下没有 session 文件，请先执行 account login", dir)
 	case 1:
 		return found[0], nil
 	default:

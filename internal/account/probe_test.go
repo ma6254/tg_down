@@ -38,25 +38,26 @@ func fakeProbeDesktop(t *testing.T) {
 	}
 }
 
-// probeService 构造一个使用临时数据目录的服务。
-func probeService(t *testing.T) *Service {
+// probeService 构造一个使用临时数据目录的服务，并返回该数据目录。
+func probeService(t *testing.T) (*Service, string) {
 	t.Helper()
-	t.Setenv("TG_DOWN_HOME", t.TempDir())
+	home := t.TempDir()
+	t.Setenv("TG_DOWN_HOME", home)
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		t.Fatalf("打开数据库: %v", err)
 	}
 	t.Cleanup(func() { _ = db.Close() })
-	return New(db)
+	return New(db), home
 }
 
 // TestProbeImport 确认默认会写 session 文件、登记数据库并自动选中唯一账号。
 func TestProbeImport(t *testing.T) {
-	work := t.TempDir()
-	t.Chdir(work)
+	t.Chdir(t.TempDir())
 	fakeProbeDesktop(t)
 
-	result, err := probeService(t).Probe(context.Background(), ProbeOptions{Import: true})
+	svc, home := probeService(t)
+	result, err := svc.Probe(context.Background(), ProbeOptions{Import: true})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -70,12 +71,13 @@ func TestProbeImport(t *testing.T) {
 		t.Error("唯一账号应被自动选中")
 	}
 
-	files, err := filepath.Glob(filepath.Join(work, "sessions", "mtproto-*.json"))
+	// 默认落在 <数据目录>/sessions，而不是当前工作目录。
+	files, err := filepath.Glob(filepath.Join(home, "sessions", "mtproto-*.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(files) != 1 {
-		t.Fatalf("sessions 下应有 1 个 session 文件，实际 %v", files)
+		t.Fatalf("数据目录 sessions 下应有 1 个 session 文件，实际 %v", files)
 	}
 	if !strings.Contains(files[0], "8613800000001") {
 		t.Errorf("session 文件名应包含手机号，实际 %s", files[0])
@@ -88,7 +90,8 @@ func TestProbeDryRun(t *testing.T) {
 	t.Chdir(work)
 	fakeProbeDesktop(t)
 
-	result, err := probeService(t).Probe(context.Background(), ProbeOptions{Import: false})
+	svc, _ := probeService(t)
+	result, err := svc.Probe(context.Background(), ProbeOptions{Import: false})
 	if err != nil {
 		t.Fatalf("Probe: %v", err)
 	}
@@ -110,7 +113,7 @@ func TestProbeDryRun(t *testing.T) {
 // TestProbeUsesProxyToggle 确认探测遵守 http_proxy_enabled。
 func TestProbeUsesProxyToggle(t *testing.T) {
 	t.Chdir(t.TempDir())
-	svc := probeService(t)
+	svc, _ := probeService(t)
 	fakeProbeDesktop(t)
 	lastProbeProxy = ""
 
@@ -144,7 +147,7 @@ func TestProbeUsesProxyToggle(t *testing.T) {
 // TestProbeMissingTData 确认真实实现遇到不存在的 tdata 时尽早失败，
 // 不会去连接 Telegram（测试环境无外网）。
 func TestProbeMissingTData(t *testing.T) {
-	svc := probeService(t)
+	svc, _ := probeService(t)
 
 	missing := filepath.Join(t.TempDir(), "tdata")
 	_, err := svc.Probe(context.Background(), ProbeOptions{TDataPath: missing, Import: true})
@@ -158,7 +161,7 @@ func TestProbeMissingTData(t *testing.T) {
 
 // TestLogoutDesktopRejected 确认桌面导入的账号不允许注销。
 func TestLogoutDesktopRejected(t *testing.T) {
-	svc := probeService(t)
+	svc, _ := probeService(t)
 	row, err := svc.Record(RecordInput{
 		Kind:   database.AccountKindMTProto,
 		Source: database.AccountSourceDesktop,
@@ -182,7 +185,7 @@ func TestLogoutDesktopRejected(t *testing.T) {
 
 // TestSelectRequiresSession 确认切换账号前校验 session 文件。
 func TestSelectRequiresSession(t *testing.T) {
-	svc := probeService(t)
+	svc, _ := probeService(t)
 	row, err := svc.Record(RecordInput{
 		Kind:        database.AccountKindMTProto,
 		Name:        "No Session",

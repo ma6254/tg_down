@@ -3,18 +3,18 @@ package account
 import (
 	"context"
 	"fmt"
-
+	"github.com/ma6254/tg_down/internal/appdir"
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 )
-
-// defaultSessionDir 是导入桌面账号时保存 session 的目录，与 CLI 的默认值一致。
-const defaultSessionDir = "./sessions"
 
 // probeDesktop 是 tdata 探测实现；测试里替换成假数据，避免真的连接 Telegram。
 var probeDesktop = mtproto.ProbeDesktop
 
 // ProbeOptions 是 tdata 登录探测的输入。
+//
+// session 文件的落盘位置固定为数据目录下的 sessions（appdir.SessionsDir），
+// 不再提供覆盖参数：CLI 的 --session-dir 走自己的导入流程，不会走到这里。
 type ProbeOptions struct {
 	// TDataPath 是 Telegram Desktop 的 tdata 目录，留空时自动查找。
 	TDataPath string
@@ -22,8 +22,6 @@ type ProbeOptions struct {
 	Passcode string
 	// Import 为 false 时只探测，不写 session 文件与数据库。
 	Import bool
-	// SessionDir 是导入时 session 文件的落盘目录，空表示用默认值。
-	SessionDir string
 }
 
 // ProbeAccount 是 tdata 中单个账号的探测结果。
@@ -89,9 +87,10 @@ func (s *Service) Probe(ctx context.Context, opts ProbeOptions) (ProbeResult, er
 		return out, nil
 	}
 
-	sessionDir := opts.SessionDir
-	if sessionDir == "" {
-		sessionDir = defaultSessionDir
+	// session 固定落在数据目录下，不再接受覆盖参数。
+	sessionDir, err := appdir.SessionsDir()
+	if err != nil {
+		return ProbeResult{}, fmt.Errorf("确定 session 目录: %w", err)
 	}
 	imported, err := s.ImportDesktop(sessionDir, raw)
 	if err != nil {

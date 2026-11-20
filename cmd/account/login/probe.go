@@ -76,12 +76,17 @@ func runDesktopProbe(ctx context.Context, lo *loginOptions, proxy string) error 
 //
 // session 文件已存在时保留原文件，避免覆盖本工具已登录的授权；账号记录仍会更新。
 func importDesktopAccounts(lo *loginOptions, result *mtproto.DesktopProbeResult) (imported, skipped int, err error) {
+	dir, err := lo.sessionDir()
+	if err != nil {
+		return 0, 0, err
+	}
+
 	svc, closeFn, err := store.NewService()
 	if err != nil {
 		return 0, 0, err
 	}
 	defer closeFn()
 
-	out, err := svc.ImportDesktop(lo.SessionDir, result)
+	out, err := svc.ImportDesktop(dir, result)
 	return out.Imported, out.Skipped, err
 }

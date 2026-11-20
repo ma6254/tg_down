@@ -41,6 +41,14 @@ func TestProbeValidate(t *testing.T) {
 			wantErr: "--probe",
 		},
 		{
+			name: "probe 不能用 --session",
+			opts: &loginOptions{
+				Kind: accountKindMTProto, Probe: true,
+				SessionPath: "./sessions/other.json",
+			},
+			wantErr: "--probe",
+		},
+		{
 			name: "probe 不支持 botapi",
 			opts: &loginOptions{
 				Kind: accountKindBotAPI, Probe: true, Token: testToken,

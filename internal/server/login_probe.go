@@ -31,7 +31,7 @@ type ProbeRequest struct {
 	TDataPath     string `json:"tdata,omitempty"`          // Telegram Desktop 的 tdata 目录，留空自动查找
 	TDataPasscode string `json:"tdata_passcode,omitempty"` // Telegram Desktop 的本地密码
 	TimeoutSecond int    `json:"timeout_seconds,omitempty"`
-	// Import 表示是否把探测到的账号写入 sessions/ 与数据库，缺省 true（与 CLI 一致）。
+	// Import 表示是否把探测到的账号写入 <数据目录>/sessions 与数据库，缺省 true（与 CLI 一致）。
 	Import *bool `json:"import,omitempty"`
 }
 
