@@ -93,3 +93,21 @@ func TestSnapshotTerminalStatusWins(t *testing.T) {
 		t.Errorf("running 快照 = %+v，期望 running/100", running)
 	}
 }
+
+// TestMediaURL 确认封面地址直接采用注入函数返回的完整 URL，不再重复拼前缀。
+func TestMediaURL(t *testing.T) {
+	m := &Manager{thumbnailURL: func(mtproto.Session, mtproto.Thumb) string {
+		return "/api/v1/media/thumbnail/abc"
+	}}
+	if got := m.mediaURL(mtproto.Session{}, mtproto.Thumb{}); got != "/api/v1/media/thumbnail/abc" {
+		t.Errorf("mediaURL = %q", got)
+	}
+
+	empty := &Manager{thumbnailURL: func(mtproto.Session, mtproto.Thumb) string { return "" }}
+	if got := empty.mediaURL(mtproto.Session{}, mtproto.Thumb{}); got != "" {
+		t.Errorf("空 URL = %q", got)
+	}
+	if got := (&Manager{}).mediaURL(mtproto.Session{}, mtproto.Thumb{}); got != "" {
+		t.Errorf("未注入时应为空，实际 %q", got)
+	}
+}

@@ -208,3 +208,44 @@ func TestInstallDropsLegacyThumbnail(t *testing.T) {
 		t.Error("Install 后旧列仍然存在")
 	}
 }
+
+// TestNormalizeDownloadThumbnailURLs 确认重复拼接的缩略图前缀会被收敛，正常地址不动。
+func TestNormalizeDownloadThumbnailURLs(t *testing.T) {
+	db := openTestDB(t)
+
+	const (
+		duplicated = "/api/v1/media/thumbnail//api/v1/media/thumbnail/abc"
+		normal     = "/api/v1/media/thumbnail/def"
+	)
+	broken := &DownloadTask{Link: "https://t.me/a/1", ThumbnailURL: duplicated, PreviewURL: duplicated}
+	healthy := &DownloadTask{Link: "https://t.me/a/2", ThumbnailURL: normal, PreviewURL: normal}
+	for _, task := range []*DownloadTask{broken, healthy} {
+		if _, err := db.CreateDownloadTask(task); err != nil {
+			t.Fatalf("创建任务失败: %v", err)
+		}
+	}
+
+	if err := db.NormalizeDownloadThumbnailURLs(); err != nil {
+		t.Fatalf("规范化失败: %v", err)
+	}
+	// 幂等：再次执行不应报错。
+	if err := db.NormalizeDownloadThumbnailURLs(); err != nil {
+		t.Fatalf("二次规范化失败: %v", err)
+	}
+
+	got, err := db.GetDownloadTask(broken.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ThumbnailURL != "/api/v1/media/thumbnail/abc" || got.PreviewURL != "/api/v1/media/thumbnail/abc" {
+		t.Errorf("修复后 = %q / %q", got.ThumbnailURL, got.PreviewURL)
+	}
+
+	keep, err := db.GetDownloadTask(healthy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keep.ThumbnailURL != normal {
+		t.Errorf("正常地址被改写: %q", keep.ThumbnailURL)
+	}
+}

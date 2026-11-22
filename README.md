@@ -4,7 +4,9 @@ Telegram 下载工具的 Go 后端。
 
 把 Telegram 里能看到的媒体按任务队列下载到本地磁盘：单用户、本地优先，默认只监听 `127.0.0.1`；需要对外暴露时再启用 Bearer token。前端是一个 React 单页应用，构建后通过 `go:embed` 打进同一个可执行文件。
 
-> **状态：HTTP 服务已接入账号与配置接口**。已实现账号探测/列表/切换/详情与配置读写；会话、消息、下载与前端内嵌尚未接入。完整规划见 [规划文档](./doc/plan.md)，接口见 [API 草案](./doc/api.md)。
+> **状态：HTTP 服务已接入账号、配置、链接解析与下载**。`botapi` 登录尚未接入；
+> `python build.py` 默认把前端打进同一个可执行文件。完整规划见 [规划文档](./doc/plan.md)，
+> 接口见 [API 草案](./doc/api.md)。
 
 ## 规划中的能力
 
@@ -45,17 +47,23 @@ go run . --help                   # 查看全部命令与参数
 go run . version                  # 版本与构建信息
 go run . serve                    # 启动 HTTP 服务（127.0.0.1:22429）
 
-python build.py                   # 构建 bin/tg_down[.exe]，注入版本 / 提交 / 编译时间
-python build.py --web --release   # 同时构建前端并打包 webembed/dist.tar.gz、去掉符号表
-go build -o tg_down.exe .         # 快速构建（版本信息为 dev / none / unknown）
+python build.py                   # 构建 bin/tg_down[.exe]：内嵌前端，注入版本信息
+python build.py --release         # 去掉符号表，单文件分发
+python build.py --no-web          # 跳过前端构建，Web 界面为占位页
+go build -o tg_down.exe .         # 快速构建（无内嵌前端，版本信息为 dev / none / unknown）
 ```
 
-`build.py` 需要 Python 3.9+；`--web` 还会调用 `pnpm` 构建 `../tg_down_web`。
+`build.py` 需要 Python 3.9+；默认会调用 `pnpm` 构建 `../tg_down_web`，
+把产物打成 `webembed/dist.zip` 并给 `go build` 加 `-tags webdist`：
+生成的二进制自带 Web 界面，不需要额外的静态文件目录。
+`--no-web` 跳过前端构建（包括直接 `go build`），此时 `/` 显示占位页，`/api` 照常可用。
+若手动给 `go build` 加 `-tags webdist`，需要先有 `webembed/dist.zip`（由默认构建生成）。
 构建信息会写进 `tg_down version` 与 `GET /api/v1/system`，交叉编译用
 `--os/--arch`（例如 `--os linux --arch arm64`）。
 
 启动后可访问 `http://127.0.0.1:22429/api/v1/health` 与 `/swagger/`；
-前端的 Web 界面尚未内嵌，开发期用 `../tg_down_web` 的 Vite 代理访问。
+默认构建的二进制在 `/` 直接提供 Web 界面，开发期仍可用
+`../tg_down_web` 的 Vite dev server（proxy 模式）。
 
 ## 命令行参数
 
@@ -150,7 +158,7 @@ tg_down account login --probe-session
 | `--tdata` | Telegram Desktop 的 tdata 目录，留空自动查找 |
 | `--tdata-passcode` | Telegram Desktop 的本地密码（设置了才需要） |
 
-登录成功后 session 写入 `<数据目录>/sessions/mtproto-<手机号数字>.json`（默认 `~/.tg_down/sessions/`），
+登录成功后 session 写入 `<数据目录>/sessions/mtproto-<手机号数字>.json`（默认 `<exe 目录>/sessions/`），
 权限收紧到 `0600`。该文件等同于账号凭证，**不要提交或分享**（`.gitignore` 已忽略 `sessions/`）。
 session 位置固定跟随数据目录，不随启动目录变化；需要整体换位置时用 `TG_DOWN_HOME`。
 重复登录会复用有效 session，直接打印当前账号。
@@ -212,7 +220,7 @@ tg_down account login --probe --probe-timeout 30s
 
 ### 探测本工具自己的 session
 
-`--probe-session` 是另一个功能：检查数据目录下 `sessions/`（默认 `~/.tg_down/sessions/`）里
+`--probe-session` 是另一个功能：检查数据目录下 `sessions/`（默认 `<exe 目录>/sessions/`）里
 由本工具保存的 session 是否仍有效。
 
 ```bash
@@ -260,7 +268,7 @@ $ tg_down account info --live
   手机号    +861****364
   状态      authed
   会员      否
-  session   ~/.tg_down/sessions/mtproto-8613754320364.json
+  session   <exe 目录>/sessions/mtproto-8613754320364.json
   创建时间  2026-11-19 00:10
   更新时间  2026-11-19 00:10
 
@@ -298,7 +306,7 @@ $ tg_down account list
   * 表示当前账号（account switch 切换）
 ```
 
-`list` 只读本地数据库（`~/.tg_down/data.db` 的 `accounts` 表），由 `account login` / `--probe`
+`list` 只读本地数据库（`<exe 目录>/data.db` 的 `accounts` 表），由 `account login` / `--probe`
 写入，不联网、没有额外参数。
 
 需要查看本机 Telegram Desktop 的账号（以及已登录设备）时，用 `account login --probe`。
@@ -317,18 +325,22 @@ $ tg_down account list
 
 ## 数据目录与数据库
 
-运行数据默认放在 `~/.tg_down/`（Windows：`C:\Users\<你>\.tg_down\`），首次运行时自动创建（权限 `0700`）：
+运行数据默认放在**可执行文件所在目录**（便携：拷走 `tg_down.exe` 就带走了数据和账号），
+首次运行时自动创建（权限 `0700`）：
 
 ```
-~/.tg_down/
+<exe 目录>/
   data.db      # SQLite：accounts（账号）+ settings（系统配置）
+  sessions/    # MTProto 登录凭据
 ```
 
 - 用环境变量 `TG_DOWN_HOME` 可以改目录，例如指向同步盘或 U 盘。
+- `go run` / `go test` 的临时二进制没有稳定位置，会回退到 `~/.tg_down/`，避免数据跟着缓存目录丢失。
+- 旧版本默认把数据放在 `~/.tg_down/`（Windows 为 `%USERPROFILE%\.tg_down`）：升级后把 `TG_DOWN_HOME` 指向旧目录即可继续使用，或把目录内容拷到 exe 目录。
 - 数据库使用纯 Go 驱动（`glebarez/sqlite` → `modernc.org/sqlite`），**不需要 CGO / gcc**。
 - `accounts` 表字段：`id / kind / name / phone / username / session_path / state / last_error / created_at / updated_at`。
 - `settings` 表字段：`key / value / updated_at`。
-- session 文件本身存放在 `<数据目录>/sessions`（默认 `~/.tg_down/sessions/`，位置固定，只随 `TG_DOWN_HOME` 变化），
+- session 文件本身存放在 `<数据目录>/sessions`（默认 `<exe 目录>/sessions/`，位置固定，只随 `TG_DOWN_HOME` 变化），
   数据库只记录**相对数据目录**的路径（如 `sessions/mtproto-xxx.json`），整个数据目录搬走后仍然有效；
   token、session 内容不写入数据库。
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""构建 tg_down：注入版本信息，可选打包前端产物。
+"""构建 tg_down：注入版本信息，默认把前端产物打进二进制。
 
 用法：
-    python build.py                     # 构建当前平台的二进制
-    python build.py --web               # 先构建前端并打包 webembed/dist.tar.gz
+    python build.py                     # 构建当前平台的二进制（默认内嵌前端）
+    python build.py --no-web            # 不构建前端，Web 界面用占位页
     python build.py --release           # 去掉符号表（-s -w），体积更小
     python build.py --version 0.2.0     # 手动指定版本号
     python build.py --os linux --arch arm64 --output bin/tg_down-linux-arm64
@@ -15,21 +15,20 @@ GET /api/v1/system 会返回同样的值：
     Commit    当前 git 提交的短哈希（没有 git 时为 none）
     BuildTime 构建时间，RFC3339 带时区
 
---web 会调用 pnpm 构建 ../tg_down_web，并把 dist 打成 webembed/dist.tar.gz。
-打包是确定性的（条目排序、mtime 归零），同一份前端产物每次生成的文件完全一致。
+默认会调用 pnpm 构建 ../tg_down_web，把 dist 打成 webembed/dist.zip，
+并给 go build 加 -tags webdist：产物是单文件，直接能打开 Web 界面。
+打包是确定性的（条目排序、时间戳固定），同一份前端产物每次生成的文件完全一致。
 """
 
 from __future__ import annotations
 
 import argparse
-import gzip
-import io
 import os
 import platform
 import shutil
 import subprocess
 import sys
-import tarfile
+import zipfile
 from datetime import datetime
 from pathlib import Path
 
@@ -37,7 +36,7 @@ ROOT = Path(__file__).resolve().parent
 VERSION_PKG = "github.com/ma6254/tg_down/internal/build"
 WEB_DIR_DEFAULT = ROOT.parent / "tg_down_web"
 WEBEMBED_DIR = ROOT / "webembed"
-TARBALL_NAME = "dist.tar.gz"
+WEB_ZIP_NAME = "dist.zip"
 
 
 def _enable_utf8() -> None:
@@ -156,31 +155,27 @@ def build_web(web_dir: Path) -> Path:
     return dist
 
 
-def pack_tarball(dist_dir: Path, target: Path) -> None:
-    """把 dist 打成确定性 tar.gz，条目形如 dist/index.html。
+def pack_web_zip(dist_dir: Path, target: Path) -> None:
+    """把 dist 打成确定性 zip，条目形如 index.html（根就是站点根）。
 
-    条目排序、mtime/uid/gid 归零，gzip 头也不带时间：同一份产物每次生成的文件一致，
-    提交到仓库时不会因为构建时间产生无意义的 diff。
+    条目排序、时间戳固定为 1980-01-01：同一份产物每次生成的文件字节一致，
+    不会因为构建时间产生无意义的差异。用 zip 是因为 Go 的 *zip.Reader 直接
+    实现 fs.FS，serve 可以原样交给 http.FileServer，不需要先解压到磁盘。
     """
     files = sorted(path for path in dist_dir.rglob("*") if path.is_file())
     target = target.resolve()
     target.parent.mkdir(parents=True, exist_ok=True)
     tmp = target.with_name(target.name + ".tmp")
 
-    with open(tmp, "wb") as raw:
-        # filename="" 让 gzip 头不写入输出文件名，产物与保存路径无关。
-        with gzip.GzipFile(fileobj=raw, mode="wb", compresslevel=9, mtime=0, filename="") as gz:
-            with tarfile.open(fileobj=gz, mode="w") as tar:
-                for path in files:
-                    rel = path.relative_to(dist_dir.parent).as_posix()
-                    data = path.read_bytes()
-                    info = tarfile.TarInfo(rel)
-                    info.size = len(data)
-                    info.mtime = 0
-                    info.mode = 0o644
-                    info.uid = info.gid = 0
-                    info.uname = info.gname = ""
-                    tar.addfile(info, io.BytesIO(data))
+    with zipfile.ZipFile(
+        tmp, mode="w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
+    ) as archive:
+        for path in files:
+            rel = path.relative_to(dist_dir).as_posix()
+            info = zipfile.ZipInfo(rel, date_time=(1980, 1, 1, 0, 0, 0))
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.external_attr = 0o644 << 16
+            archive.writestr(info, path.read_bytes())
 
     os.replace(tmp, target)
     try:
@@ -204,7 +199,12 @@ def build_go(args: argparse.Namespace, version: str, commit: str, when: str) -> 
     if args.release:
         ldflags = ["-s", "-w", *ldflags]
 
-    cmd = ["go", "build", "-trimpath", "-ldflags", " ".join(ldflags), "-o", str(output), "."]
+    # 默认加构建标签，让 webembed 用 go:embed 把 dist.zip 打进二进制；--no-web 时跳过。
+    tags: list[str] = [] if args.no_web else ["-tags", "webdist"]
+    cmd = [
+        "go", "build", "-trimpath", *tags,
+        "-ldflags", " ".join(ldflags), "-o", str(output), ".",
+    ]
     env = dict(os.environ)
     env["GOOS"] = args.os
     env["GOARCH"] = args.arch
@@ -248,7 +248,7 @@ def main(argv: list[str] | None = None) -> int:
         epilog=(
             "示例：\n"
             "  python build.py\n"
-            "  python build.py --web --release\n"
+            "  python build.py --release\n"
             "  python build.py --os linux --arch arm64\n"
         ),
     )
@@ -257,7 +257,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--arch", default="", help="目标架构（默认本机，例如 amd64 / arm64）")
     parser.add_argument("--output", default="", help="产物路径（默认 bin/tg_down[.exe]）")
     parser.add_argument("--release", action="store_true", help="去掉符号表（-s -w）")
-    parser.add_argument("--web", action="store_true", help="构建前端并打包 webembed/dist.tar.gz")
+    parser.add_argument("--no-web", action="store_true", help="不构建前端，Web 界面用占位页")
     parser.add_argument(
         "--web-dir",
         default=str(WEB_DIR_DEFAULT),
@@ -282,9 +282,9 @@ def main(argv: list[str] | None = None) -> int:
     when = build_time()
 
     log(f"版本 {version} · 提交 {commit} · {when}")
-    if args.web:
+    if not args.no_web:
         dist = build_web(Path(args.web_dir).resolve())
-        pack_tarball(dist, WEBEMBED_DIR / TARBALL_NAME)
+        pack_web_zip(dist, WEBEMBED_DIR / WEB_ZIP_NAME)
 
     output = build_go(args, version, commit, when)
     cross = args.os != host_os() or args.arch != (host_arch() or "amd64")

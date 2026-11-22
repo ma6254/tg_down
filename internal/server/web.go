@@ -16,7 +16,8 @@ import (
 //   - off：不提供前端，只保留 /api
 //   - proxy：反向代理到外部前端服务（开发时指向 Vite dev server）
 //   - dir：从本地目录提供静态文件
-//   - 留空：内置占位页，等前端构建产物接入后再换成 embed
+//   - FS：使用内嵌进二进制的前端产物（默认构建）
+//   - 都没有：内置占位页
 func (s *Server) mountWeb(mux *http.ServeMux) {
 	switch s.cfg.Web.Mode {
 	case "off":
@@ -37,7 +38,10 @@ func (s *Server) mountWeb(mux *http.ServeMux) {
 	case "dir":
 		mux.Handle("/", spaFileServer(os.DirFS(s.cfg.Web.Dir)))
 	default:
-		// TODO(M2)：前端构建产物接入后，这里换成 webui.Dist()（go:embed dist.tar.gz）。
+		if s.cfg.Web.FS != nil {
+			mux.Handle("/", spaFileServer(s.cfg.Web.FS))
+			return
+		}
 		mux.Handle("/", placeholderPage())
 	}
 }

@@ -7,6 +7,7 @@ package serve
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"net"
 	"os"
 	"os/signal"
@@ -20,6 +21,7 @@ import (
 	"github.com/ma6254/tg_down/internal/build"
 	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/utils"
+	"github.com/ma6254/tg_down/webembed"
 )
 
 // serveShutdownTimeout 是收到退出信号后等待在途请求结束的上限。
@@ -107,9 +109,12 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 	}
 	defer ln.Close()
 
+	webFS := embeddedWebFS()
 	srv := server.New(server.Config{
 		Addr:  opts.Listen,
 		Token: opts.AuthToken,
+		// 内嵌前端：默认构建通过 webdist 标签打进二进制；--no-web 时回退占位页。
+		Web: server.WebConfig{FS: webFS},
 		// 登录探测：account login --probe 的 HTTP 版。
 		ProbeLogin: probeLogin,
 		// 账号列表：account list 的 HTTP 版。
@@ -146,8 +151,17 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 	})
 
 	addr := ln.Addr().String()
-	printStartupInfo(addr, opts)
+	printStartupInfo(addr, opts, webFS != nil)
 	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.Stop)
+}
+
+// embeddedWebFS 返回内嵌进二进制的前端产物；未用 webdist 标签构建时为 nil。
+func embeddedWebFS() fs.FS {
+	dist, ok := webembed.Dist()
+	if !ok {
+		return nil
+	}
+	return dist
 }
 
 // serveUntilSignal 运行 HTTP 服务，收到 Ctrl+C 或 SIGTERM 后优雅关闭。
@@ -209,7 +223,11 @@ func listenError(addr string, err error) error {
 }
 
 // printStartupInfo 打印生效配置与真实监听地址，便于确认参数是否按预期覆盖。
-func printStartupInfo(addr string, opts Options) {
+func printStartupInfo(addr string, opts Options, webEmbedded bool) {
+	webLabel := "占位页（未内嵌前端）"
+	if webEmbedded {
+		webLabel = "内置前端（webdist）"
+	}
 	fmt.Printf(`
   ┌──────────────────────────────────────────────┐
   │   tg_down · Telegram 下载工具                 │
@@ -217,6 +235,7 @@ func printStartupInfo(addr string, opts Options) {
   版本      %s（commit %s，built %s）
   配置      数据库 settings（tg_down config）
   监听      http://%s
+  Web 界面  %s
   健康检查  http://%s/api/v1/health
   接口文档  http://%s/swagger/
   下载目录  %s
@@ -226,6 +245,7 @@ func printStartupInfo(addr string, opts Options) {
 `,
 		build.Version, build.Commit, build.BuildTime,
 		addr,
+		webLabel,
 		addr,
 		addr,
 		opts.DownloadDir,

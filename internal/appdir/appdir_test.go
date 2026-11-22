@@ -118,3 +118,46 @@ func TestAbsSessionPathLegacyCWD(t *testing.T) {
 		t.Errorf("旧路径 = %q，期望 %q", got, legacy)
 	}
 }
+
+// TestExeDir 确认默认可执行文件目录，临时构建产物则回退。
+func TestExeDir(t *testing.T) {
+	sep := string(filepath.Separator)
+	tools := filepath.Join(sep, "tg_down_tools")
+
+	if got := exeDir(filepath.Join(tools, "tg_down.exe")); got != tools {
+		t.Errorf("普通二进制目录 = %q，期望 %q", got, tools)
+	}
+
+	// go run / go test 的临时二进制没有稳定位置。
+	if got := exeDir(filepath.Join(os.TempDir(), "tg_down.exe")); got != "" {
+		t.Errorf("临时目录 = %q，期望空", got)
+	}
+	if got := exeDir(filepath.Join(tools, "appdir.test.exe")); got != "" {
+		t.Errorf("测试二进制 = %q，期望空", got)
+	}
+	if got := exeDir(filepath.Join(tools, "go-build123", "b001", "exe", "tg_down.exe")); got != "" {
+		t.Errorf("go-build 缓存 = %q，期望空", got)
+	}
+
+	cache := filepath.Join(sep, "tg_down_cache")
+	t.Setenv("GOCACHE", cache)
+	if got := exeDir(filepath.Join(cache, "tg_down.exe")); got != "" {
+		t.Errorf("GOCACHE 下 = %q，期望空", got)
+	}
+}
+
+// TestDataDirFallsBackForTestBinary 确认测试二进制使用 ~/.tg_down。
+func TestDataDirFallsBackForTestBinary(t *testing.T) {
+	t.Setenv(EnvHome, "")
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("当前环境没有用户主目录")
+	}
+	got, err := DataDir()
+	if err != nil {
+		t.Fatalf("DataDir: %v", err)
+	}
+	if got != filepath.Join(home, DirName) {
+		t.Errorf("DataDir = %q，期望 %q", got, filepath.Join(home, DirName))
+	}
+}

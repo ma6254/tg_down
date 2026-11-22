@@ -25,11 +25,11 @@ coverage.html
 
 # ---------------------------------------------------------------------------
 # 内嵌前端产物
-# webembed/dist.tar.gz 由 build.py 生成、按约定提交，
-# 因此只忽略打包过程中的临时文件（重复执行 build 时的中间态）。
+# webembed/dist.zip 由 build.py --web 生成（构建时经 -tags webdist 打进二进制），
+# 属于构建产物，不入库；只保留目录本身给 go:embed 用。
 # ---------------------------------------------------------------------------
-/webembed/dist.tar.gz.tmp
-/webembed/dist.tar.gz.partial
+/webembed/dist.zip
+/webembed/dist.zip.tmp
 
 # ---------------------------------------------------------------------------
 # 运行时数据：SQLite、下载文件、日志、临时分片

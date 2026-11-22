@@ -153,16 +153,16 @@ func (m *Manager) Stop(ctx context.Context) {
 	}
 }
 
-// mediaURL 为缩略图登记 token 并返回可访问地址；未注入登记函数时不带封面。
+// mediaURL 返回任务封面的可访问地址；未注入登记函数时不带封面。
+//
+// cfg.ThumbnailURL 负责登记 token 并返回**完整 URL**（cmd 层已经拼上
+// /api/v1/media/thumbnail/），这里不能重复加前缀，否则会变成
+// /api/v1/media/thumbnail//api/v1/media/thumbnail/...。
 func (m *Manager) mediaURL(session mtproto.Session, thumb mtproto.Thumb) string {
 	if m.thumbnailURL == nil {
 		return ""
 	}
-	token := m.thumbnailURL(session, thumb)
-	if token == "" {
-		return ""
-	}
-	return "/api/v1/media/thumbnail/" + token
+	return m.thumbnailURL(session, thumb)
 }
 
 // publishEvent 把事件交给调用方（cmd 侧转成 SSE 广播）。

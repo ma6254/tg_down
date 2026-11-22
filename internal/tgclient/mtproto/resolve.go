@@ -223,7 +223,7 @@ func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]Lin
 
 				media.MaxSize = maxSize
 				media.Downloadable = media.Size <= maxSize
-				media.Link = peers[i].MessageURL(media.MessageID)
+				media.Link = mediaLink(targets[i], media, peers[i])
 				results[i].Media = media
 
 				// 相册的每条媒体是独立消息：链接通常指向第一张，
@@ -277,6 +277,18 @@ func newPeerResolver(api *tg.Client) *peerResolver {
 		byUsername: make(map[string]Peer),
 		linked:     make(map[string]Peer),
 	}
+}
+
+// mediaLink 返回单条媒体可再次解析的链接。
+//
+// 评论链接解析到的是讨论组里的消息，MessageURL 会给出 t.me/c/<群>/<消息>；
+// 账号没加入讨论组时这个链接无法解析（预览能成是因为走了频道的关联讨论组接口）。
+// 评论本身继续沿用原始 ?comment= 链接，下载阶段才能重新定位到它。
+func mediaLink(target link.Target, media *Media, peer Peer) string {
+	if target.IsComment() && media.MessageID == target.CommentID {
+		return target.Raw
+	}
+	return peer.MessageURL(media.MessageID)
 }
 
 // resolveTarget 把链接定位成「会话 + 消息 ID」，评论链接会换到关联讨论组。

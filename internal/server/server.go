@@ -19,6 +19,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net"
 	"net/http"
 	"sync"
@@ -109,10 +110,14 @@ type Config struct {
 // WebConfig 决定前端如何挂载到 / 上。
 type WebConfig struct {
 	// Mode 取值：off（不提供前端）、proxy（反向代理到 Vite dev server）、
-	// dir（从本地构建目录提供）、留空（内置占位页）。
+	// dir（从本地构建目录提供）、留空（用 FS，否则内置占位页）。
 	Mode     string
 	ProxyURL string // proxy 模式的下游地址
 	Dir      string // dir 模式的前端构建目录
+
+	// FS 是内嵌进二进制的前端产物（默认构建生成）；
+	// Mode 留空且 FS 非 nil 时直接从它提供页面。
+	FS fs.FS
 }
 
 // Server 是 HTTP 服务实例。

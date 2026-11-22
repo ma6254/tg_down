@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"github.com/ma6254/tg_down/internal/build"
@@ -976,5 +977,43 @@ func TestStopClosesSSE(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("Serve 未随 Stop 退出")
+	}
+}
+
+// TestEmbeddedWebServesSPA 确认 Web.FS 会提供 index、静态资源与 history 回退。
+func TestEmbeddedWebServesSPA(t *testing.T) {
+	webFS := fstest.MapFS{
+		"index.html":    &fstest.MapFile{Data: []byte("<html>app shell</html>")},
+		"assets/app.js": &fstest.MapFile{Data: []byte("console.log('app')")},
+	}
+	h := New(Config{Web: WebConfig{FS: webFS}}).Handler()
+
+	tests := []struct {
+		name   string
+		target string
+		code   int
+		body   string
+		cache  string
+	}{
+		{"首页", "/", http.StatusOK, "app shell", "no-cache"},
+		{"前端路由回退", "/accounts", http.StatusOK, "app shell", "no-cache"},
+		{"静态资源", "/assets/app.js", http.StatusOK, "console.log", "immutable"},
+		{"缺失资源", "/assets/missing.js", http.StatusNotFound, "", ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := doRequest(t, h, http.MethodGet, tt.target, nil)
+			if rec.Code != tt.code {
+				t.Fatalf("状态码 = %d，期望 %d", rec.Code, tt.code)
+			}
+			if tt.body != "" && !strings.Contains(rec.Body.String(), tt.body) {
+				t.Errorf("响应体 = %q，期望包含 %q", rec.Body.String(), tt.body)
+			}
+			if tt.cache != "" {
+				if cc := rec.Header().Get("Cache-Control"); !strings.Contains(cc, tt.cache) {
+					t.Errorf("Cache-Control = %q，期望包含 %q", cc, tt.cache)
+				}
+			}
+		})
 	}
 }

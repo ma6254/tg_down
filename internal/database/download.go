@@ -181,3 +181,21 @@ func (d *DB) SetDownloadPaused(id uint, reason string) error {
 			"error":  reason,
 		}).Error
 }
+
+// NormalizeDownloadThumbnailURLs 修正历史数据里重复拼接的缩略图前缀。
+//
+// 旧版本生成任务封面地址时把 /api/v1/media/thumbnail/ 拼了两次，
+// <img> 请求会 404、任务列表只剩占位图标。这里把存量收敛成单前缀；
+// 已经正常的地址不匹配替换串，保持原样。
+func (d *DB) NormalizeDownloadThumbnailURLs() error {
+	const (
+		duplicated = "/api/v1/media/thumbnail//api/v1/media/thumbnail/"
+		normal     = "/api/v1/media/thumbnail/"
+	)
+	return d.Model(&DownloadTask{}).
+		Where("thumbnail_url LIKE ? OR preview_url LIKE ?", duplicated+"%", duplicated+"%").
+		Updates(map[string]any{
+			"thumbnail_url": gorm.Expr("REPLACE(thumbnail_url, ?, ?)", duplicated, normal),
+			"preview_url":   gorm.Expr("REPLACE(preview_url, ?, ?)", duplicated, normal),
+		}).Error
+}

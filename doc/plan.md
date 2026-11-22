@@ -115,7 +115,7 @@ tg_down_server/
   internal/download/        # Manager、worker、resume、limiter、进度 Hub
   internal/store/           # SQLite（modernc.org/sqlite，纯 Go 免 CGO）
   internal/httpapi/         # router、handlers、sse、token 中间件
-  webembed/embed.go         # //go:embed 前端产物
+  webembed/                 # //go:embed dist.zip（-tags webdist 时启用）
   go.mod
 
 tg_down_web/

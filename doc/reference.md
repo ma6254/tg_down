@@ -35,7 +35,7 @@
 | [internal/config/config.go](../omni_toolbox/omni_toolbox_server/internal/config/config.go) | `internal/config/config.go` | 字段换成 tg_down 的：`download.dir`、`download.max_concurrency`、`auth.token`、`botapi.base_url`、`proxy`；`Load`/`Validate`/`Addr` 结构照搬 |
 | [cmd/root.go](../omni_toolbox/omni_toolbox_server/cmd/root.go) | `cmd/tgdown/main.go` | 依赖装配 + 优雅退出 + banner 照搬；子命令可砍到 `serve` / `version` |
 | [internal/log/](../omni_toolbox/omni_toolbox_server/internal/log) | `internal/log/` | 整套照搬：分级、tag、access/error 轮转、Windows 控制台处理 |
-| [internal/webui/](../omni_toolbox/omni_toolbox_server/internal/webui) | `webembed/` | `go:embed dist.tar.gz` + tar FS；比 `//go:embed dist` 更稳（空目录不报错、文件数少） |
+| [internal/webui/](../omni_toolbox/omni_toolbox_server/internal/webui) | `webembed/` | `go:embed dist.zip` + `zip.Reader`（直接是 `fs.FS`），`-tags webdist` 时启用 |
 | [internal/queue/queue.go](../omni_toolbox/omni_toolbox_server/internal/queue/queue.go) | `internal/download/manager.go` | **保留形状**：`Store` 接口、`clone()` 快照、`persistLocked`、`pruneLocked`；状态机与字段重写 |
 | [internal/database/](../omni_toolbox/omni_toolbox_server/internal/database) 的表映射写法 | `internal/store/` | 领域对象 ↔ 行对象的 `FromDomain` / `ToDomain` 模式值得保留 |
 | [build.py](../omni_toolbox/omni_toolbox_server/build.py) | 项目根 `build.py` | 改路径、模块名、端口；保留 `dev-run` 监视重启与 `--skip-frontend` |
@@ -175,7 +175,7 @@ func (m *Manager) Cancel(id int64) error   // 取消运行中：cancel context +
 | plan.md 原方案 | 参考 omni 后的调整 |
 |---|---|
 | `modernc.org/sqlite` | 若沿用 GORM，用 `glebarez/sqlite`（底层同为 modernc，仍是纯 Go）；若不用 ORM，`modernc.org/sqlite` 直接写 SQL |
-| `webembed/embed.go` 用 `//go:embed dist` | 改为 `dist.tar.gz` + tar FS，已在本机验证 |
+| `webembed/embed.go` 用 `//go:embed dist` | 改为 `dist.zip` + `zip.Reader`（直接实现 `fs.FS`），由默认构建生成并加 `-tags webdist` |
 | 前端状态用 TanStack Query | 可先用 omni 式的「`api` 封装 + `useState` + SSE 推送」，少一层依赖；任务多了再引 Query |
 | 里程碑 M0 0.5–1 天 | 有模板可抄，M0 可压到半天；省下的时间投到 M3/M4 的续传与限流 |
 

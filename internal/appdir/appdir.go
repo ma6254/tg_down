@@ -1,7 +1,7 @@
 // Package appdir 负责解析 tg_down 的运行数据目录。
 //
-// 默认使用用户主目录下的 .tg_down，可用环境变量 TG_DOWN_HOME 覆盖，
-// 便于测试或把数据放到自定义位置（如 U 盘、同步目录）。
+// 默认放在可执行文件所在目录（便携：拷走 exe 就带走数据），
+// 可用环境变量 TG_DOWN_HOME 覆盖，便于把数据放到自定义位置（如 U 盘、同步目录）。
 package appdir
 
 import (
@@ -12,18 +12,31 @@ import (
 	"strings"
 )
 
-// DirName 是默认的数据目录名。
+// DirName 是回退到用户主目录时使用的数据目录名（go run / go test 等场景）。
 const DirName = ".tg_down"
 
 // EnvHome 是指定数据目录的环境变量名。
 const EnvHome = "TG_DOWN_HOME"
 
 // DataDir 返回数据目录路径，不保证目录已存在。
+//
+// 优先级：TG_DOWN_HOME → 可执行文件所在目录 → 用户主目录下的 .tg_down。
+// 最后一种只用于 go run / go test 这类临时二进制：它们每次运行路径都变，
+// 数据放在旁边会丢，所以回退到固定位置。
 func DataDir() (string, error) {
 	if custom := strings.TrimSpace(os.Getenv(EnvHome)); custom != "" {
 		return custom, nil
 	}
+	if exe, err := os.Executable(); err == nil {
+		if dir := exeDir(exe); dir != "" {
+			return dir, nil
+		}
+	}
+	return homeDataDir()
+}
 
+// homeDataDir 返回旧的默认位置 ~/.tg_down。
+func homeDataDir() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("解析用户主目录: %w", err)
@@ -32,6 +45,46 @@ func DataDir() (string, error) {
 		return "", errors.New("无法确定用户主目录，请设置 " + EnvHome)
 	}
 	return filepath.Join(home, DirName), nil
+}
+
+// exeDir 返回可执行文件所在目录；临时构建产物返回空串，由调用方回退。
+//
+// go run / go test 的二进制在 GOCACHE 或临时目录里，且每次路径都不同，
+// 把这些路径当作数据目录会让数据凭空消失，所以统一回退到 ~/.tg_down。
+func exeDir(exe string) string {
+	base := strings.ToLower(filepath.Base(exe))
+	if strings.HasSuffix(base, ".test") || strings.HasSuffix(base, ".test.exe") {
+		return ""
+	}
+
+	dir := filepath.Dir(exe)
+	if within(dir, os.TempDir()) {
+		return ""
+	}
+	if cache := strings.TrimSpace(os.Getenv("GOCACHE")); cache != "" && within(dir, cache) {
+		return ""
+	}
+	if strings.Contains(strings.ToLower(dir), "go-build") {
+		return ""
+	}
+	return dir
+}
+
+// within 判断 path 是否等于 root 或位于 root 之下。
+func within(path, root string) bool {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return false
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return false
+	}
+	rel, err := filepath.Rel(absRoot, absPath)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }
 
 // EnsureDataDir 创建数据目录（权限 0700）并返回路径。
