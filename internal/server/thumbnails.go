@@ -64,7 +64,7 @@ func (s *Server) handleDownloadThumbnail(w http.ResponseWriter, r *http.Request)
 		contentType = "image/jpeg"
 	}
 	w.Header().Set("Content-Type", contentType)
-	// 字节缓存到数据库后内容不再变化，可让浏览器缓存久一点。
+	// 封面字节缓存到数据目录后内容不再变化，可让浏览器缓存久一点。
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(thumbnail.Data)

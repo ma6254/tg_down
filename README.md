@@ -4,17 +4,22 @@ Telegram 下载工具的 Go 后端。
 
 把 Telegram 里能看到的媒体按任务队列下载到本地磁盘：单用户、本地优先，默认只监听 `127.0.0.1`；需要对外暴露时再启用 Bearer token。前端是一个 React 单页应用，构建后通过 `go:embed` 打进同一个可执行文件。
 
-> **状态：HTTP 服务已接入账号、配置、链接解析与下载**。`botapi` 登录尚未接入；
-> `python build.py` 默认把前端打进同一个可执行文件。完整规划见 [规划文档](./doc/plan.md)，
-> 接口见 [API 草案](./doc/api.md)。
+> **状态：HTTP 服务已接入账号、配置、链接解析、下载任务与内嵌前端**。
+> `botapi` 登录与会话/消息浏览尚未接入；`python build.py` 默认把前端打进同一个可执行文件。
+> 完整规划见 [规划文档](./doc/plan.md)，接口见 [API 文档](./doc/api.md)。
 
-## 规划中的能力
+## 能力概览
 
-- **双接入**：MTProto 用户账号（手机号 + 验证码 + 两步密码）与 Bot API（Bot Token），统一抽象成"账号"。
-- **浏览**：会话列表与消息列表，可只筛含媒体的消息。
-- **下载**：任务队列、并发限流、SSE 实时进度、暂停 / 继续 / 重试、`.part` 断点续传、`FLOOD_WAIT` 自动挂起恢复。
-- **单二进制**：前端产物内嵌，部署只拷贝一个可执行文件。
-- **安全**：默认回环监听；非回环地址未配置 token 时拒绝启动；session 与 bot token 不写日志、不通过接口回传。
+- **MTProto 接入（已实现）**：手机号 + 验证码 + 两步密码，session 落盘；支持探测本机 Telegram Desktop（tdata）并导入已有登录。
+- **Bot API 接入（规划中）**：Bot Token 换成 `kind=botapi` 账号；`--botapi-base-url` 已预留，Bot API 客户端尚未实现。
+- **浏览（规划中）**：群 / 频道 / 私聊 / 收藏夹会话列表与消息流，仿 Telegram Desktop 的双栏 / 三栏布局，支持真实文件夹 / 归档；只读、可多选下载，默认不自动标记已读（提供手动按钮）。
+- **群 / 频道监控（规划中）**：持续检测新消息，按发送人、置顶、关键词、大小/时长等条件自动下载；随 `tg_down serve` 常驻运行，`monitor` 子命令只管理配置。设计见 [规划文档 §3.2](./doc/plan.md#32-群--频道监控规划)。
+- **RSS 输出（规划中）**：把监控的群 / 频道消息发布为 RSS 2.0（Media RSS）feed，阅读器可直接订阅；媒体条目默认指向已下载文件。设计见 [规划文档 §3.3](./doc/plan.md#33-rss-输出服务规划)。
+- **下载（已实现）**：任务队列、并发限流、SSE 实时进度、暂停 / 继续 / 重试、`.part` 断点续传。`FLOOD_WAIT` 目前只把限流原因写进任务 `error`，尚未自动挂起恢复。
+- **下载草稿（规划中）**：下载页的链接、展开正文链接与覆盖开关自动保存到数据库，刷新 / 换浏览器后恢复；同时缓存上次解析摘要。设计见 [规划文档 §3.4](./doc/plan.md#34-下载页输入草稿规划)。
+- **下载历史（规划中）**：下载页展示最近解析过的输入批次（含解析摘要缓存），点击回填；与草稿分开保存。设计见 [规划文档 §3.5](./doc/plan.md#35-下载输入历史规划)。
+- **单二进制（已实现）**：前端产物内嵌，部署只拷贝一个可执行文件。
+- **安全（已实现）**：默认回环监听；非回环地址未配置 token 时拒绝启动；session（以及接入后的 bot token）不写日志、不通过接口回传。
 
 ## 技术栈
 
@@ -24,20 +29,26 @@ Telegram 下载工具的 Go 后端。
 | HTTP | 标准库 `net/http`（Go 1.22+ 路由） |
 | 命令 | cobra |
 | 存储 | SQLite，纯 Go 驱动（免 CGO） |
-| Telegram | gotd/td（MTProto）+ 官方 Bot API |
+| Telegram | gotd/td（MTProto）；Bot API 客户端尚未接入 |
 | 前端 | React 19 + TypeScript + Tailwind CSS（同仓 `../tg_down_web`） |
 
-## 目录结构（规划）
+## 目录结构
 
 ```
-cmd/tgdown/        命令入口：serve / version
-internal/config/   配置加载与校验
-internal/account/  账号与登录流程
-internal/tgclient/ 统一 Client 接口，mtproto 与 botapi 两个实现
-internal/download/ 任务管理、worker、续传、限流
-internal/store/    SQLite
-internal/httpapi/  路由、中间件、SSE
-webembed/          go:embed 前端产物
+main.go              命令入口（cobra 根命令）
+cmd/                 子命令：serve / account / config / download / version；monitor 规划中
+internal/appdir/     数据目录解析（exe 目录 / TG_DOWN_HOME）
+internal/config/     配置项定义、校验与展示脱敏
+internal/database/   SQLite（GORM + 纯 Go 驱动）
+internal/account/    账号 CRUD、登录流程、tdata 探测
+internal/tgclient/   客户端实现（目前只有 mtproto/）
+internal/link/       Telegram 链接解析
+internal/download/   任务管理、worker、续传、限流、进度
+internal/avatar/     账号与 peer 头像磁盘缓存
+internal/thumbcache/ 媒体缩略图磁盘缓存
+internal/server/     路由、中间件、SSE、Web 静态资源托管
+webembed/            //go:embed dist.zip（-tags webdist 时启用）
+doc/                 规划与接口文档
 ```
 
 ## 快速开始
@@ -65,6 +76,9 @@ go build -o tg_down.exe .         # 快速构建（无内嵌前端，版本信�
 默认构建的二进制在 `/` 直接提供 Web 界面，开发期仍可用
 `../tg_down_web` 的 Vite dev server（proxy 模式）。
 
+`serve` 是唯一的常驻进程：HTTP 接口、下载队列以及规划中的群 / 频道监控与 RSS 输出都在该进程内运行。
+`account`、`config`、`download` 等子命令只做一次性操作，`monitor`（规划中）只管理监控配置，都不常驻。
+
 ## 命令行参数
 
 全局参数（所有子命令共用，持久化 flag）：
@@ -75,8 +89,10 @@ go build -o tg_down.exe .         # 快速构建（无内嵌前端，版本信�
 | `--download-dir` | `./downloads` | 下载根目录 |
 | `--max-concurrency` | `1` | 并发下载数，范围 1–8 |
 | `--auth-token` | 空 | API 鉴权 token；监听非回环地址时**必填** |
-| `--botapi-base-url` | 空 | 自建 Bot API 服务地址，空则用官方 |
-| `--log-level` | `info` | `debug` / `info` / `warn` / `error` |
+| `--botapi-base-url` | 空 | 预留：自建 Bot API 地址；Bot API 尚未接入，当前不影响行为 |
+| `--log-level` | `info` | 预留：`debug` / `info` / `warn` / `error`；当前只校验取值，日志级别固定 |
+
+> `--botapi-base-url` 与 `--log-level` 目前只做参数校验并显示在启动横幅里，尚未改变实际行为。
 
 `serve` 专用：
 
@@ -149,7 +165,7 @@ tg_down account login --probe-session
 | `--api-hash` | 自备 api_hash，也可用 `TG_DOWN_API_HASH` |
 | `--name` | 展示名，留空按类型自动生成（手机号打码 / `bot:<id>`） |
 | `--phone` | MTProto 手机号，E.164 格式 |
-| `--token` | Bot API token，形如 `123456789:AA...` |
+| `--token` | Bot API token，形如 `123456789:AA...`（Bot API 登录尚未接入） |
 | `--code` | 登录验证码，留空则登录时交互输入 |
 | `--password` | 两步验证密码，留空则在需要时交互输入 |
 | `--probe` | 探测本机 Telegram Desktop（tdata）中已登录的账号并导入数据库，不触发登录 |
@@ -166,7 +182,7 @@ session 位置固定跟随数据目录，不随启动目录变化；需要整体
 账号登记到数据库后，如果库里**只有一个账号**，会自动设为当前账号（`settings.current_account_id`），
 无需再执行 `account switch`；有多个账号时保持原有选择。
 
-代理支持 `socks5` / `socks5h`（远端 DNS）与 `http` / `https`（CONNECT 隧道），后续下载同样走它。
+代理支持 `socks5` / `socks5h`（远端 DNS）与 `http` / `https`（CONNECT 隧道），后续下载同样走它；暂不支持 MTProxy。
 也可以用 `tg_down config set http_proxy ...` 持久化代理，未配置时直连；
 `http_proxy_enabled=false`（默认 true）会保留代理地址但强制直连。
 
@@ -242,7 +258,7 @@ tg_down account info --live        # 额外联网查询资料与已登录设备�
 tg_down account switch 3           # 按账号 ID 切换当前账号（别名 use）
 tg_down account switch             # 显示当前账号
 tg_down account logout 3           # 按 ID 退出登录
-tg_down account logout my_bot      # 按展示名 / 手机号（别名 remove / delete）
+tg_down account logout 主号        # 按展示名 / 手机号（别名 remove / delete）
 tg_down account logout --all --yes # 删除全部账号
 ```
 
@@ -250,7 +266,8 @@ tg_down account logout --all --yes # 删除全部账号
 会员、session 路径与创建/更新时间；不带参数取当前账号，带参数取指定 ID。
 
 加 `--live` 会临时连一次 Telegram，查询服务端最新资料（账号名、用户名、手机号、
-生日、简介）与已登录客户端列表——**只展示，不写入数据库**，超时 30 秒。
+生日、简介）与已登录客户端列表——**只展示，不回写资料字段**；首次联网拿到
+`user.id` 时会补写账号的 `telegram_id` 绑定。超时 30 秒。
 
 「会员」一行固定输出：离线时为「未知（加 --live 查询）」，`--live` 成功后会变成「是 / 否」，
 来源于服务端 `user.premium`（只知道当前是否有效，拿不到到期时间）。
@@ -320,8 +337,10 @@ $ tg_down account list
 | `--yes` | 跳过交互确认（不确认时会提示输入 yes） |
 
 退出登录会删除数据库记录与对应 session 文件，不可恢复；已下载的文件不受影响。
+桌面导入（`--probe`）的账号与 Telegram Desktop 共用 auth key，注销会影响桌面端，
+因此 `logout` 会拒绝并提示改用删除，只移除本地副本。
 
-> 当前状态：`login`（mtproto）、`list`、`switch`、`logout` 均已接入 SQLite；`botapi` 登录尚未接入。
+> 当前状态：`login`（mtproto）、`list`、`info`、`switch`、`logout` 与本地删除均已接入 SQLite；`botapi` 登录尚未接入。
 
 ## 数据目录与数据库
 
@@ -330,16 +349,19 @@ $ tg_down account list
 
 ```
 <exe 目录>/
-  data.db      # SQLite：accounts（账号）+ settings（系统配置）
+  data.db      # SQLite：accounts（账号）/ settings（配置）/ download_tasks（下载任务）
   sessions/    # MTProto 登录凭据
+  avatar/      # 账号与 peer 头像缓存（首次访问时创建）
+  thumbnail/   # 媒体缩略图缓存（首次访问时创建）
 ```
 
 - 用环境变量 `TG_DOWN_HOME` 可以改目录，例如指向同步盘或 U 盘。
 - `go run` / `go test` 的临时二进制没有稳定位置，会回退到 `~/.tg_down/`，避免数据跟着缓存目录丢失。
 - 旧版本默认把数据放在 `~/.tg_down/`（Windows 为 `%USERPROFILE%\.tg_down`）：升级后把 `TG_DOWN_HOME` 指向旧目录即可继续使用，或把目录内容拷到 exe 目录。
 - 数据库使用纯 Go 驱动（`glebarez/sqlite` → `modernc.org/sqlite`），**不需要 CGO / gcc**。
-- `accounts` 表字段：`id / kind / name / phone / username / session_path / state / last_error / created_at / updated_at`。
-- `settings` 表字段：`key / value / updated_at`。
+- `accounts` 表字段：`id / kind / source / name / phone / username / session_path / state / last_error / tg_user_id / created_at / updated_at`。
+- `settings` 表字段：`key / type / value / updated_at`。
+- `download_tasks` 表以 `link` 唯一（同一条链接复用已有任务），记录任务状态、进度、文件路径与封面缓存键；字段定义见 `internal/database/download.go`。
 - session 文件本身存放在 `<数据目录>/sessions`（默认 `<exe 目录>/sessions/`，位置固定，只随 `TG_DOWN_HOME` 变化），
   数据库只记录**相对数据目录**的路径（如 `sessions/mtproto-xxx.json`），整个数据目录搬走后仍然有效；
   token、session 内容不写入数据库。
@@ -367,6 +389,9 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 |---|---|
 | `http_proxy` | 出站代理，支持 `http://`、`https://`、`socks5://`、`socks5h://`；登录与下载都会使用 |
 | `http_proxy_enabled` | 布尔值，默认 `true`；`false` 时保留 `http_proxy` 但强制直连 |
+| `api_id` | 自定义 Telegram 应用的 api_id（到 my.telegram.org 申请），需与 `api_hash` 同时配置 |
+| `api_hash` | 自定义 Telegram 应用的 api_hash，32 位十六进制；属于敏感信息 |
+| `api_custom_enabled` | 布尔值，默认 `false`；为 `true` 时才使用 `api_id` / `api_hash`，否则回退内置 desktop 凭据 |
 | `current_account_id` | 当前选中的账号 ID，由 `account switch` 维护（手工设置需填已存在的账号 ID） |
 
 > 配置项的定义、校验与展示脱敏集中在 `internal/config` 包，命令层只负责读写与输出；
@@ -382,8 +407,9 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 
 代理只从配置读取：`http_proxy_enabled` 为 true（默认）且配置了 `http_proxy` 时登录与下载都走它，否则直连；没有对应的命令行参数。
 
-服务启动时如果 `settings` 表为空，会写入 `http_proxy_enabled=true` 作为默认配置；
-`http_proxy` 的默认值是空串（未配置），不会写入空行。
+服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
+（`http_proxy_enabled=true`、`api_custom_enabled=false`）；
+`http_proxy`、`api_id` 等空默认值表示未配置，不会写入空行。
 
 - 设置时会校验协议与主机，非法值直接拒绝。
 - `config list` / `config get` 输出时会隐藏代理密码（`http://user:***@host`）。
@@ -406,7 +432,7 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 ## 相关文档
 
 - [整体规划](./doc/plan.md)
-- [API 草案](./doc/api.md)
+- [API 文档](./doc/api.md)
 - [参考实现分析](./doc/reference.md)
 
 ## 许可证

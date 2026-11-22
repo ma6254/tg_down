@@ -3,7 +3,7 @@
   "info": {
     "title": "tg_down API",
     "version": "__VERSION__",
-    "description": "tg_down 的本地 HTTP 接口。默认只监听 127.0.0.1，此时不需要鉴权；对外监听时必须配置 --auth-token，此后 /api/* 要求 Authorization: Bearer <token>。\n\n调试：点右上角 Authorize 填入 --auth-token 的值，再对接口点 Try it out；token 保存在浏览器 localStorage，刷新后仍有效。\n\n当前已实现健康检查与登录探测，其余接口见 doc/api.md，随里程碑逐条补齐。"
+    "description": "tg_down 的本地 HTTP 接口。默认只监听 127.0.0.1，此时不需要鉴权；对外监听时必须配置 --auth-token，此后 /api/* 要求 Authorization: Bearer <token>。\n\n调试：点右上角 Authorize 填入 --auth-token 的值，再对接口点 Try it out；token 保存在浏览器 localStorage，刷新后仍有效。\n\n本文件只描述已实现的接口：健康检查、系统信息、账号、设置、链接解析、媒体缩略图、下载任务与 SSE。规划中但尚未实现的接口（Bot API 接入、手机号/验证码登录、会话与消息浏览）见 doc/api.md 的对应章节。"
   },
   "servers": [
     {
@@ -323,7 +323,7 @@
           "accounts"
         ],
         "summary": "账号在线资料",
-        "description": "联网查询账号的最新资料（名称、会员、生日、简介）与已登录客户端，等价于 CLI 的 account info <id> --live。只查询、不写数据库；单次查询最长 30 秒，超时返回 504。",
+        "description": "联网查询账号的最新资料（名称、会员、生日、简介）与已登录客户端，等价于 CLI 的 account info <id> --live。只查询、不回写资料字段；首次联网拿到 user.id 时会补写账号的 telegram_id 绑定。单次查询最长 30 秒，超时返回 504。",
         "operationId": "getAccountLive",
         "security": [
           {
@@ -1492,7 +1492,7 @@
           "settings"
         ],
         "summary": "读取全部配置",
-        "description": "返回数据库里的全部配置项，等价于 CLI 的 config list。http_proxy 的值是明文，接口本身由 Bearer token 保护；直接展示给多人前请自行打码。",
+        "description": "返回数据库里的全部配置项，等价于 CLI 的 config list。http_proxy 的密码在响应里固定返回 ***，不会回传明文；提交时若密码仍是 ***，服务端沿用已保存的密码。",
         "operationId": "getSettings",
         "security": [
           {

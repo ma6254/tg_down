@@ -52,7 +52,8 @@ type Config struct {
 	// 业务层用 ErrAccountNotFound 表示账号不存在；为 nil 时接口返回 501。
 	GetAccount func(ctx context.Context, id int64) (AccountDetail, error)
 
-	// GetAccountLive 联网查询账号的最新资料与已登录客户端（不落库）。
+	// GetAccountLive 联网查询账号的最新资料与已登录客户端（只查资料；
+	// 首次联网拿到 user.id 时会补写账号的 telegram_id）。
 	// 业务层用 ErrAccountNotFound / ErrAccountNoSession / ErrAccountLiveFailed 表示
 	// 可归因的失败；为 nil 时接口返回 501。
 	GetAccountLive func(ctx context.Context, id int64) (AccountLiveInfo, error)

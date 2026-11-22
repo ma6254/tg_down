@@ -123,7 +123,7 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 		SelectAccount: selectAccount,
 		// 账号详情：account info <id> 的 HTTP 版。
 		GetAccount: getAccount,
-		// 在线资料：account info <id> --live 的 HTTP 版（联网查询，不落库）。
+		// 在线资料：account info <id> --live 的 HTTP 版（联网查询；首次会补写 telegram_id）。
 		GetAccountLive: getAccountLive,
 		// 账号头像：磁盘缓存，过期后联网刷新。
 		GetAccountAvatar: getAccountAvatar,
