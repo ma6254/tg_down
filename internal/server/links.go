@@ -56,6 +56,12 @@ type PreviewSender struct {
 	AvatarURL string `json:"avatar_url,omitempty"`
 }
 
+// PreviewCommentSection 是频道帖子评论区的摘要，用来决定是否显示评论入口。
+type PreviewCommentSection struct {
+	Available bool `json:"available"`
+	Count     int  `json:"count"`
+}
+
 // PreviewLink 是消息正文里的一段文字链接（text_link / url 实体）。
 type PreviewLink struct {
 	Text string `json:"text,omitempty"`
@@ -98,6 +104,9 @@ type PreviewMedia struct {
 	ThumbnailURL string `json:"thumbnail_url,omitempty"`
 	// PreviewURL 是正文大图地址（比封面更大）；没有时前端退回 ThumbnailURL。
 	PreviewURL string `json:"preview_url,omitempty"`
+	// ThumbKey 是缩略图的磁盘缓存键；下载页历史用它取封面，
+	// 跨重启与 token 过期仍然有效；没有缩略图时省略。
+	ThumbKey string `json:"thumb_key,omitempty"`
 }
 
 // PreviewItem 是一条链接的解析结果；Error 非空时其它字段无意义。
@@ -115,7 +124,9 @@ type PreviewItem struct {
 	Media    *PreviewMedia   `json:"media,omitempty"` // 纯文本消息为空
 	// Medias 是相册的全部媒体（按消息 ID 升序）；非相册消息为空，只用 Media。
 	Medias []PreviewMedia `json:"medias,omitempty"`
-	Error  string         `json:"error,omitempty"`
+	// CommentSection 是频道帖子的评论区摘要；普通消息/评论链接省略。
+	CommentSection *PreviewCommentSection `json:"comment_section,omitempty"`
+	Error          string                 `json:"error,omitempty"`
 }
 
 // PreviewSummary 汇总一次解析的结果。

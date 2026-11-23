@@ -70,7 +70,33 @@ func TestPutEmpty(t *testing.T) {
 
 // TestPathInvalidKey 非法键不产生路径。
 func TestPathInvalidKey(t *testing.T) {
-	if _, err := Path(""); err == nil {
-		t.Error("空键应返回错误")
+	for _, key := range []string{
+		"",
+		"..",
+		"../../etc/passwd",
+		"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+		"0123456789abcdef",
+	} {
+		if _, err := Path(key); err == nil {
+			t.Errorf("%q 应返回错误", key)
+		}
+		if Cached(key) {
+			t.Errorf("%q 不应命中缓存", key)
+		}
+	}
+}
+
+// TestCached 确认只有落盘且非空的缩略图才算有封面。
+func TestCached(t *testing.T) {
+	t.Setenv("TG_DOWN_HOME", t.TempDir())
+	key := Key(mtproto.Thumb{Kind: "document", FileID: 9, SizeType: "m"})
+	if Cached(key) {
+		t.Fatal("未写入时不应命中")
+	}
+	if err := Put(key, []byte("jpeg")); err != nil {
+		t.Fatal(err)
+	}
+	if !Cached(key) {
+		t.Error("写入后应命中")
 	}
 }

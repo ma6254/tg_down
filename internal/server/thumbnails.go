@@ -40,6 +40,22 @@ func (s *Server) handleMediaThumbnail(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(thumbnail.Data)
 }
 
+// handleDownloadSubresource 处理 GET /api/v1/downloads/{id}/{sub}。
+//
+// 支持 thumbnail（任务封面）与 file（已下载文件）；路由放宽成两段通配是为了让
+// GET /downloads/history/{id} 能作为更具体的字面量模式优先命中，
+// 见 route.go 里的说明。
+func (s *Server) handleDownloadSubresource(w http.ResponseWriter, r *http.Request) {
+	switch r.PathValue("sub") {
+	case "thumbnail":
+		s.handleDownloadThumbnail(w, r)
+	case "file":
+		s.handleDownloadFile(w, r)
+	default:
+		writeError(w, http.StatusNotFound, "not_found", "接口不存在: "+r.URL.Path)
+	}
+}
+
 // handleDownloadThumbnail 处理 GET /api/v1/downloads/{id}/thumbnail：
 // 任务卡片的封面，首次访问按需解析消息并下载，之后走数据库缓存。
 func (s *Server) handleDownloadThumbnail(w http.ResponseWriter, r *http.Request) {

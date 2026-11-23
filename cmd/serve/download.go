@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/ma6254/tg_down/internal/download/manager"
 	"github.com/ma6254/tg_down/internal/server"
@@ -39,6 +40,8 @@ func mapDownloadError(err error) error {
 		return fmt.Errorf("%w: %v", server.ErrDownloadConflict, err)
 	case errors.Is(err, manager.ErrThumbnailNotFound):
 		return fmt.Errorf("%w: %v", server.ErrThumbnailNotFound, err)
+	case errors.Is(err, manager.ErrFileNotFound):
+		return fmt.Errorf("%w: %v", server.ErrDownloadFileNotFound, err)
 	case errors.Is(err, manager.ErrNoAccount):
 		return fmt.Errorf("%w: %v", server.ErrNoCurrentAccount, err)
 	case errors.Is(err, manager.ErrNoSession):
@@ -53,9 +56,10 @@ func mapDownloadError(err error) error {
 func createDownloads(mgr *manager.Manager) func(context.Context, server.DownloadCreateRequest) (server.DownloadCreateResponse, error) {
 	return func(ctx context.Context, req server.DownloadCreateRequest) (server.DownloadCreateResponse, error) {
 		result, err := mgr.Create(ctx, manager.CreateRequest{
-			Links:     req.Links,
-			Overwrite: req.Overwrite,
-			Single:    req.Single,
+			Links:          req.Links,
+			Overwrite:      req.Overwrite,
+			Single:         req.Single,
+			AllowOverLimit: req.AllowOverLimit,
 		})
 		if err != nil {
 			return server.DownloadCreateResponse{}, mapDownloadError(err)
@@ -72,6 +76,31 @@ func listDownloads(mgr *manager.Manager) func(context.Context, server.DownloadLi
 			return nil, mapDownloadError(err)
 		}
 		return server.NewDownloadTasks(tasks), nil
+	}
+}
+
+// downloadStats 是 Config.GetDownloadStats 的实现：领域总览进、接口 DTO 出。
+func downloadStats(mgr *manager.Manager) func(context.Context) server.DownloadStats {
+	return func(context.Context) server.DownloadStats {
+		return server.NewDownloadStats(mgr.Stats())
+	}
+}
+
+// downloadSpeedHistory 是 Config.GetDownloadSpeedHistory 的实现。
+func downloadSpeedHistory(mgr *manager.Manager) func(context.Context, server.DownloadSpeedHistoryQuery) (server.DownloadSpeedHistory, error) {
+	return func(_ context.Context, query server.DownloadSpeedHistoryQuery) (server.DownloadSpeedHistory, error) {
+		return server.NewDownloadSpeedHistory(mgr.SpeedHistory(manager.SpeedHistoryQuery{
+			From:   query.From,
+			To:     query.To,
+			Bucket: query.Bucket,
+		})), nil
+	}
+}
+
+// resetDownloadSpeedStats 是 Config.ResetDownloadSpeedStats 的实现。
+func resetDownloadSpeedStats(mgr *manager.Manager) func(context.Context) time.Time {
+	return func(context.Context) time.Time {
+		return mgr.ResetSpeedStats()
 	}
 }
 
@@ -105,5 +134,23 @@ func downloadThumbnail(mgr *manager.Manager) func(context.Context, uint) (server
 			return server.MediaThumbnail{}, mapDownloadError(err)
 		}
 		return server.NewMediaThumbnail(data), nil
+	}
+}
+
+// downloadFile 是 Config.GetDownloadFile 的实现：打开已完成任务的文件，
+// 由 HTTP 层负责 Range 与关闭。
+func downloadFile(mgr *manager.Manager) func(context.Context, uint) (server.DownloadFile, error) {
+	return func(ctx context.Context, id uint) (server.DownloadFile, error) {
+		file, info, err := mgr.OpenFile(ctx, id)
+		if err != nil {
+			return server.DownloadFile{}, mapDownloadError(err)
+		}
+		return server.DownloadFile{
+			Content: file,
+			Name:    info.Name,
+			MIME:    info.MIME,
+			Size:    info.Size,
+			ModTime: info.ModTime,
+		}, nil
 	}
 }

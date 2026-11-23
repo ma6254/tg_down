@@ -58,6 +58,8 @@ func TestAPIItemsRegistered(t *testing.T) {
 		{KeyAPIID, TypeInteger},
 		{KeyAPIHash, TypeString},
 		{KeyAPICustomEnabled, TypeBoolean},
+		{KeyWebTheme, TypeString},
+		{KeyWebTitleSpeed, TypeBoolean},
 	}
 
 	for _, tt := range tests {

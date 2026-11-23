@@ -94,7 +94,9 @@ type LinkResult struct {
 	Entities   []MessageEntity
 	Media      *Media
 	Medias     []*Media
-	Err        error
+	// CommentSection 是频道帖子的评论区摘要；普通消息/评论链接为空。
+	CommentSection *CommentSection
+	Err            error
 }
 
 // MessageURL 返回一条消息的链接；私聊等拼不出链接的场景返回空串。
@@ -206,6 +208,14 @@ func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]Lin
 					results[i].Sender = senderOf(msg, users)
 				}
 				results[i].MessageID = messageIDs[i]
+				if !targets[i].IsComment() {
+					if replies, ok := msg.GetReplies(); ok && replies.Comments {
+						results[i].CommentSection = &CommentSection{
+							Available: true,
+							Count:     replies.Replies,
+						}
+					}
+				}
 				text, entities := trimMessage(msg.Message, messageEntities(msg))
 				results[i].Text = text
 				results[i].Entities = entities
@@ -267,15 +277,17 @@ type peerResolver struct {
 	byKey         map[string]Peer
 	byUsername    map[string]Peer
 	linked        map[string]Peer
+	linkedPhotoID map[string]int64
 	dialogsLoaded bool
 }
 
 func newPeerResolver(api *tg.Client) *peerResolver {
 	return &peerResolver{
-		api:        api,
-		byKey:      make(map[string]Peer),
-		byUsername: make(map[string]Peer),
-		linked:     make(map[string]Peer),
+		api:           api,
+		byKey:         make(map[string]Peer),
+		byUsername:    make(map[string]Peer),
+		linked:        make(map[string]Peer),
+		linkedPhotoID: make(map[string]int64),
 	}
 }
 
@@ -348,37 +360,55 @@ func (r *peerResolver) resolveUsername(ctx context.Context, username string) (Pe
 
 // linkedChat 查询广播频道的关联讨论组；讨论组 ID 与 access hash 一起缓存。
 func (r *peerResolver) linkedChat(ctx context.Context, channel Peer) (Peer, error) {
+	peer, _, err := r.linkedChatInfo(ctx, channel)
+	return peer, err
+}
+
+// linkedChatInfo 与 linkedChat 相同，但同时返回讨论组头像的 photo ID。
+func (r *peerResolver) linkedChatInfo(ctx context.Context, channel Peer) (Peer, int64, error) {
 	key := peerKey(channel.Kind, channel.ID)
 	if peer, ok := r.linked[key]; ok {
-		return peer, nil
+		return peer, r.linkedPhotoID[key], nil
 	}
 
 	input, err := channel.inputChannel()
 	if err != nil {
-		return Peer{}, fmt.Errorf("评论链接需要广播频道：%w", err)
+		return Peer{}, 0, fmt.Errorf("评论链接需要广播频道：%w", err)
 	}
 	full, err := r.api.ChannelsGetFullChannel(ctx, input)
 	if err != nil {
-		return Peer{}, fmt.Errorf("查询频道 %s 的讨论组: %w", channel.Title, friendlyError(err))
+		return Peer{}, 0, fmt.Errorf("查询频道 %s 的讨论组: %w", channel.Title, friendlyError(err))
 	}
 
 	cf, ok := full.FullChat.(*tg.ChannelFull)
 	if !ok {
-		return Peer{}, fmt.Errorf("频道 %s 没有讨论组信息", channel.Title)
+		return Peer{}, 0, fmt.Errorf("频道 %s 没有讨论组信息", channel.Title)
 	}
 	linkedID, ok := cf.GetLinkedChatID()
 	if !ok || linkedID == 0 {
-		return Peer{}, fmt.Errorf("频道 %s 没有关联讨论组，评论链接无法定位", channel.Title)
+		return Peer{}, 0, fmt.Errorf("频道 %s 没有关联讨论组，评论链接无法定位", channel.Title)
 	}
 
 	for _, chat := range full.Chats {
 		peer, ok := peerFromChatClass(chat)
 		if ok && peer.ID == linkedID {
 			r.linked[key] = peer
-			return peer, nil
+			r.linkedPhotoID[key] = chatClassPhotoID(chat)
+			return peer, r.linkedPhotoID[key], nil
 		}
 	}
-	return Peer{}, fmt.Errorf("讨论组 %d 不在返回结果里，请确认已用该账号加入讨论组", linkedID)
+	return Peer{}, 0, fmt.Errorf("讨论组 %d 不在返回结果里，请确认已用该账号加入讨论组", linkedID)
+}
+
+// chatClassPhotoID 返回频道/普通群头像的 photo ID。
+func chatClassPhotoID(chat tg.ChatClass) int64 {
+	switch c := chat.(type) {
+	case *tg.Channel:
+		return chatPhotoID(c.Photo)
+	case *tg.Chat:
+		return chatPhotoID(c.Photo)
+	}
+	return 0
 }
 
 // loadDialogs 分页拉取会话列表，用于解析 t.me/c/ 形式的私有频道链接。

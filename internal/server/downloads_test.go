@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 )
 
 // TestDownloadCreateValidation 覆盖创建接口的参数校验。
@@ -63,7 +64,7 @@ func TestDownloadCreateSuccess(t *testing.T) {
 	}).Handler()
 
 	rec := doJSONRequest(t, h, http.MethodPost, "/api/v1/downloads",
-		`{"links":["  https://t.me/a/1  ","https://t.me/a/2"],"overwrite":true,"single":true}`, nil)
+		`{"links":["  https://t.me/a/1  ","https://t.me/a/2"],"overwrite":true,"single":true,"allow_over_limit":true}`, nil)
 	if rec.Code != http.StatusCreated {
 		t.Fatalf("状态码 = %d，期望 201，body=%s", rec.Code, rec.Body.String())
 	}
@@ -75,6 +76,9 @@ func TestDownloadCreateSuccess(t *testing.T) {
 	}
 	if !got.Single {
 		t.Error("single 没有传给业务层")
+	}
+	if !got.AllowOverLimit {
+		t.Error("allow_over_limit 没有传给业务层")
 	}
 
 	var resp DownloadCreateResponse
@@ -130,6 +134,174 @@ func TestDownloadListSuccess(t *testing.T) {
 	}
 	if strings.TrimSpace(rec.Body.String()) != "[]" {
 		t.Errorf("空列表应返回 []，实际 %s", rec.Body.String())
+	}
+}
+
+// TestDownloadStats 覆盖合计速度接口：字面量路由优先于 {id}，空载也返回 200。
+func TestDownloadStats(t *testing.T) {
+	var called bool
+	h := New(Config{
+		GetDownloadStats: func(context.Context) DownloadStats {
+			called = true
+			return DownloadStats{TotalSpeed: 3500, RunningTasks: 2}
+		},
+		// 路由若把 stats 当成任务 ID，这里会失败。
+		GetDownload: func(context.Context, uint) (DownloadTask, error) {
+			t.Fatal("GET /downloads/stats 不应命中任务详情")
+			return DownloadTask{}, nil
+		},
+	}).Handler()
+
+	rec := doJSONRequest(t, h, http.MethodGet, "/api/v1/downloads/stats", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200，body=%s", rec.Code, rec.Body.String())
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q，期望 no-store", cc)
+	}
+	var stats DownloadStats
+	if err := json.Unmarshal(rec.Body.Bytes(), &stats); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if stats.TotalSpeed != 3500 || stats.RunningTasks != 2 {
+		t.Errorf("stats = %+v", stats)
+	}
+	if !called {
+		t.Error("业务层没有被调用")
+	}
+}
+
+// TestDownloadSpeedHistory 覆盖历史速度接口的参数解析与响应。
+func TestDownloadSpeedHistory(t *testing.T) {
+	var got DownloadSpeedHistoryQuery
+	h := New(Config{
+		GetDownloadSpeedHistory: func(_ context.Context, query DownloadSpeedHistoryQuery) (DownloadSpeedHistory, error) {
+			got = query
+			return DownloadSpeedHistory{
+				From:           100,
+				To:             200,
+				Bucket:         1,
+				SampleInterval: 1,
+				StatsSince:     100,
+				AverageSpeed:   300,
+				PeakSpeed:      500,
+				Points: []DownloadSpeedPoint{
+					{At: 100, TotalSpeed: 300, RunningTasks: 2},
+				},
+			}, nil
+		},
+		// 路由若把 stats/history 当成任务详情，这里会失败。
+		GetDownload: func(context.Context, uint) (DownloadTask, error) {
+			t.Fatal("GET /downloads/stats/history 不应命中任务详情")
+			return DownloadTask{}, nil
+		},
+	}).Handler()
+
+	rec := doJSONRequest(t, h, http.MethodGet,
+		"/api/v1/downloads/stats/history?from=100&to=200&bucket=1", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200，body=%s", rec.Code, rec.Body.String())
+	}
+	if got.From.Unix() != 100 || got.To.Unix() != 200 || got.Bucket != time.Second {
+		t.Errorf("业务层收到查询 = %+v", got)
+	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Errorf("Cache-Control = %q，期望 no-store", cc)
+	}
+
+	var resp DownloadSpeedHistory
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if resp.AverageSpeed != 300 || resp.PeakSpeed != 500 || resp.SampleInterval != 1 {
+		t.Errorf("响应汇总 = %+v", resp)
+	}
+	if resp.Bucket != 1 || resp.StatsSince != 100 {
+		t.Errorf("bucket/stats_since = %d/%d，期望 1/100", resp.Bucket, resp.StatsSince)
+	}
+	if len(resp.Points) != 1 || resp.Points[0].TotalSpeed != 300 || resp.Points[0].RunningTasks != 2 {
+		t.Errorf("points = %+v", resp.Points)
+	}
+}
+
+// TestDownloadSpeedHistoryDefaults 确认省略参数时默认最近 30 分钟、自动粒度。
+func TestDownloadSpeedHistoryDefaults(t *testing.T) {
+	var got DownloadSpeedHistoryQuery
+	h := New(Config{
+		GetDownloadSpeedHistory: func(_ context.Context, query DownloadSpeedHistoryQuery) (DownloadSpeedHistory, error) {
+			got = query
+			return DownloadSpeedHistory{Points: []DownloadSpeedPoint{}}, nil
+		},
+	}).Handler()
+
+	rec := doJSONRequest(t, h, http.MethodGet, "/api/v1/downloads/stats/history", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200，body=%s", rec.Code, rec.Body.String())
+	}
+	if got.Bucket != 0 {
+		t.Errorf("默认 bucket = %v，期望 0（自动）", got.Bucket)
+	}
+	if span := got.To.Sub(got.From); span < 29*time.Minute || span > 31*time.Minute {
+		t.Errorf("默认窗口 = %v，期望约 30 分钟", span)
+	}
+}
+
+// TestDownloadSpeedStatsReset 覆盖清空平均/峰值接口。
+func TestDownloadSpeedStatsReset(t *testing.T) {
+	resetAt := time.Unix(1763800000, 0)
+	h := New(Config{
+		ResetDownloadSpeedStats: func(context.Context) time.Time {
+			return resetAt
+		},
+		// 路由若命中任务操作或详情，这里会失败。
+		ControlDownload: func(context.Context, uint, string) (DownloadTask, error) {
+			t.Fatal("POST /downloads/stats/reset 不应命中任务操作")
+			return DownloadTask{}, nil
+		},
+		GetDownload: func(context.Context, uint) (DownloadTask, error) {
+			t.Fatal("POST /downloads/stats/reset 不应命中任务详情")
+			return DownloadTask{}, nil
+		},
+	}).Handler()
+
+	rec := doJSONRequest(t, h, http.MethodPost,
+		"/api/v1/downloads/stats/reset", "", nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200，body=%s", rec.Code, rec.Body.String())
+	}
+	var resp DownloadSpeedStatsReset
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("解析响应: %v", err)
+	}
+	if !resp.OK || resp.ResetAt != resetAt.Unix() {
+		t.Errorf("响应 = %+v，期望 ok=true reset_at=%d", resp, resetAt.Unix())
+	}
+}
+
+// TestDownloadSpeedHistoryValidation 覆盖历史速度接口的参数校验。
+func TestDownloadSpeedHistoryValidation(t *testing.T) {
+	h := New(Config{
+		GetDownloadSpeedHistory: func(context.Context, DownloadSpeedHistoryQuery) (DownloadSpeedHistory, error) {
+			t.Fatal("参数非法时不应调用业务层")
+			return DownloadSpeedHistory{}, nil
+		},
+	}).Handler()
+
+	paths := []string{
+		"/api/v1/downloads/stats/history?from=abc",
+		"/api/v1/downloads/stats/history?to=abc",
+		"/api/v1/downloads/stats/history?from=0&to=100",
+		"/api/v1/downloads/stats/history?from=200&to=100",
+		"/api/v1/downloads/stats/history?from=100&to=100000",
+		"/api/v1/downloads/stats/history?from=100&to=200&bucket=0",
+		"/api/v1/downloads/stats/history?from=100&to=200&bucket=3601",
+		"/api/v1/downloads/stats/history?from=100&to=86000&bucket=1",
+	}
+	for _, path := range paths {
+		rec := doJSONRequest(t, h, http.MethodGet, path, "", nil)
+		if rec.Code != http.StatusBadRequest {
+			t.Errorf("%s 状态码 = %d，期望 400，body=%s", path, rec.Code, rec.Body.String())
+		}
 	}
 }
 
@@ -233,6 +405,9 @@ func TestDownloadNotImplemented(t *testing.T) {
 		{http.MethodPost, "/api/v1/downloads", `{"links":["https://t.me/a/1"]}`},
 		{http.MethodGet, "/api/v1/downloads", ""},
 		{http.MethodGet, "/api/v1/downloads/1", ""},
+		{http.MethodGet, "/api/v1/downloads/stats", ""},
+		{http.MethodGet, "/api/v1/downloads/stats/history", ""},
+		{http.MethodPost, "/api/v1/downloads/stats/reset", ""},
 		{http.MethodPost, "/api/v1/downloads/1/pause", ""},
 		{http.MethodDelete, "/api/v1/downloads/1", ""},
 	}

@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	accountsvc "github.com/ma6254/tg_down/internal/account"
@@ -26,12 +29,20 @@ const (
 	downloadQueueSize = 256
 	// downloadPoolSize 是单个文件的多连接数，服务端比 CLI 保守一些。
 	downloadPoolSize = 4
-	// downloadThreads 是单文件的分块并发数。
-	downloadThreads = 4
+	// MaxWorkers 是并行文件数的上限，与 settings 校验、--max-concurrency 一致。
+	MaxWorkers = 8
+	// DefaultThreads 是单文件分块并发的默认值，可被 settings.download_threads 覆盖。
+	DefaultThreads = 4
 	// downloadProgressInterval 是进度落库的间隔，避免 SQLite 被高频写打满。
 	downloadProgressInterval = 1500 * time.Millisecond
 	// downloadResolveTimeout 是任务执行前重新解析消息的超时。
 	downloadResolveTimeout = 90 * time.Second
+	// commentResolveTimeout 是下载评论区时读取一个帖子评论的分页超时。
+	commentResolveTimeout = 90 * time.Second
+	// maxCommentPages 限制下载评论区时最多读取的评论页数（每页 50 条）。
+	maxCommentPages = 10
+	// maxCommentMedia 限制单个帖子最多创建的评论媒体任务数，避免一次入队过多。
+	maxCommentMedia = 100
 	// taskThumbnailTimeout 限制任务卡片缩略图的下载时间。
 	taskThumbnailTimeout = 30 * time.Second
 	// 批量解析超时按链接数放宽：建立连接 + 每条一次批量取消息。
@@ -58,6 +69,12 @@ type Manager struct {
 	mu     sync.Mutex
 	runs   map[uint]*downloadRun
 	closed bool
+	// limiter 限制同时执行的任务数；上限来自 settings.download_workers。
+	limiter *downloadLimiter
+	// speedHistory 是内存里的速度采样，供历史速度接口查询。
+	speedHistory *speedHistory
+	// speedStatsResetAt 是平均/峰值统计的起点（UnixNano）；0 表示从未清空。
+	speedStatsResetAt atomic.Int64
 }
 
 // downloadRun 是一个正在执行的任务的运行时状态。
@@ -86,8 +103,8 @@ func New(cfg Config) *Manager {
 	if workers < 1 {
 		workers = 1
 	}
-	if workers > 8 {
-		workers = 8
+	if workers > MaxWorkers {
+		workers = MaxWorkers
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Manager{
@@ -97,6 +114,8 @@ func New(cfg Config) *Manager {
 		cancel:       cancel,
 		queue:        make(chan uint, downloadQueueSize),
 		runs:         make(map[uint]*downloadRun),
+		limiter:      newDownloadLimiter(workers),
+		speedHistory: newSpeedHistory(speedHistoryCapacity),
 		onEvent:      cfg.OnEvent,
 		thumbnailURL: cfg.ThumbnailURL,
 	}
@@ -113,7 +132,7 @@ func (m *Manager) Start() error {
 		return err
 	}
 
-	for i := 0; i < m.workers; i++ {
+	for i := 0; i < MaxWorkers; i++ {
 		m.wg.Add(1)
 		go m.worker()
 	}
@@ -123,6 +142,11 @@ func (m *Manager) Start() error {
 	if err != nil {
 		return err
 	}
+
+	// 历史速度采样：跟随服务运行，Stop 时随 ctx 退出。
+	m.wg.Add(1)
+	go m.sampleSpeedHistory()
+
 	go func() {
 		for _, task := range pending {
 			m.enqueue(task.ID)
@@ -223,6 +247,19 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 	}
 	defer db.Close()
 
+	// 「覆盖同名文件」是全局设置；请求里显式打开时也生效（兼容旧客户端与 CLI）。
+	overwrite, err := config.NewStore(db).Bool(config.KeyDownloadOverwrite)
+	if err != nil {
+		return resp, fmt.Errorf("读取下载覆盖设置: %w", err)
+	}
+	overwrite = overwrite || req.Overwrite
+
+	// 「下载评论区」同样是全局设置；默认关闭，避免普通下载意外拉取大量评论媒体。
+	downloadComments, err := config.NewStore(db).Bool(config.KeyDownloadComments)
+	if err != nil {
+		return resp, fmt.Errorf("读取下载评论区设置: %w", err)
+	}
+
 	service := accountsvc.New(db)
 	accountID, ok, err := service.CurrentAccountID()
 	if err != nil {
@@ -304,69 +341,64 @@ func (m *Manager) Create(ctx context.Context, req CreateRequest) (CreateResult, 
 		// 相册链接会展开成多条任务：每张图/视频各有一条消息。
 		// Single 时只取链接指向的那条消息，不做相册展开。
 		medias := selectMedias(&result, req.Single)
-		if len(medias) == 0 {
-			resp.Skipped = append(resp.Skipped, Skip{Link: raw, Reason: "该消息没有可下载的媒体"})
-			continue
+		for _, media := range medias {
+			m.enqueueMedia(db, session, accountID, result.Chat, media, raw, result.MessageID, overwrite, req.AllowOverLimit, &resp)
 		}
 
-		for _, media := range medias {
-			link := media.Link
-			if link == "" {
-				link = raw
-			}
-			if !media.Downloadable {
-				resp.Skipped = append(resp.Skipped, Skip{Link: link, Reason: "超过当前账号的单文件上限"})
-				continue
-			}
-			messageID := media.MessageID
-			if messageID == 0 {
-				messageID = result.MessageID
-			}
-			thumbnailURL := ""
-			thumbKey := ""
-			if media.Thumb != nil {
-				thumbnailURL = m.mediaURL(session, *media.Thumb)
-				thumbKey = thumbcache.Key(*media.Thumb)
-			}
-			previewURL := ""
-			previewKey := ""
-			if media.Preview != nil {
-				previewURL = m.mediaURL(session, *media.Preview)
-				previewKey = thumbcache.Key(*media.Preview)
-			}
-
-			task := &database.DownloadTask{
-				Link:         link,
-				AccountID:    accountID,
-				ChatID:       result.Chat.ID,
-				ChatTitle:    result.Chat.Title,
-				MessageID:    messageID,
-				FileName:     media.FileName,
-				FileSize:     media.Size,
-				Kind:         string(media.Kind),
-				MIME:         media.MIME,
-				Status:       database.DownloadStatusPending,
-				Overwrite:    req.Overwrite,
-				ThumbnailURL: thumbnailURL,
-				PreviewURL:   previewURL,
-				ThumbKey:     thumbKey,
-				PreviewKey:   previewKey,
-			}
-			created, err := db.CreateDownloadTask(task)
+		// 「下载评论区」是全局开关：只对普通频道帖子生效；
+		// 单条媒体下载（single）和 ?comment= 评论链接不展开评论区。
+		commentMediaCount := 0
+		if downloadComments && !req.Single && !result.Target.IsComment() &&
+			result.CommentSection != nil && result.CommentSection.Available {
+			comments, err := resolveDownloadComments(ctx, session, result.Target)
 			if err != nil {
-				resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
-				continue
+				resp.Failed = append(resp.Failed, Failure{
+					Link:  raw,
+					Error: "读取评论区失败: " + err.Error(),
+				})
+			} else if comments != nil && comments.Available {
+				chat := result.Chat
+				if comments.Chat != nil {
+					chat = *comments.Chat
+				}
+				commentMedias, truncated := collectCommentMedias(comments.Comments, maxCommentMedia)
+				commentMediaCount = len(commentMedias)
+				for _, media := range commentMedias {
+					m.enqueueMedia(db, session, accountID, chat, media, "", 0, overwrite, req.AllowOverLimit, &resp)
+				}
+				if truncated {
+					resp.Skipped = append(resp.Skipped, Skip{
+						Link:   raw,
+						Reason: fmt.Sprintf("评论区媒体超过 %d 个，已截断", maxCommentMedia),
+					})
+				}
+				if comments.NextOffsetID != 0 {
+					resp.Skipped = append(resp.Skipped, Skip{
+						Link:   raw,
+						Reason: fmt.Sprintf("评论区超过 %d 页，仅处理前面的评论", maxCommentPages),
+					})
+				}
 			}
-			if created {
-				resp.Created = append(resp.Created, task.ID)
-				m.publishTaskUpdate(task.ID)
-				m.enqueue(task.ID)
-				continue
-			}
-			resp.Existing = append(resp.Existing, task.ID)
+		}
+
+		if len(medias) == 0 && commentMediaCount == 0 {
+			resp.Skipped = append(resp.Skipped, Skip{Link: raw, Reason: "该消息没有可下载的媒体"})
 		}
 	}
 	return resp, nil
+}
+
+// canRestartTask 判断已有任务能否被覆盖模式重置后重跑。
+//
+// pending 已经排队（只更新开关即可）、running 不能打断；
+// done / failed / paused 都已经停下，可以重置成 pending 重新下载。
+func canRestartTask(status string) bool {
+	switch status {
+	case database.DownloadStatusDone, database.DownloadStatusFailed, database.DownloadStatusPaused:
+		return true
+	default:
+		return false
+	}
 }
 
 // selectMedias 决定一次解析结果要下载哪些媒体。
@@ -388,6 +420,167 @@ func selectMedias(result *mtproto.LinkResult, single bool) []*mtproto.Media {
 		return []*mtproto.Media{result.Media}
 	}
 	return nil
+}
+
+// collectCommentMedias 按顺序取出评论里的媒体，最多 limit 个。
+// 返回 truncated=true 表示评论里还有更多媒体被截断。
+func collectCommentMedias(comments []mtproto.Comment, limit int) ([]*mtproto.Media, bool) {
+	if limit <= 0 {
+		limit = maxCommentMedia
+	}
+	capacity := len(comments)
+	if capacity > limit {
+		capacity = limit
+	}
+	out := make([]*mtproto.Media, 0, capacity)
+	for _, comment := range comments {
+		if comment.Media == nil {
+			continue
+		}
+		if len(out) >= limit {
+			return out, true
+		}
+		out = append(out, comment.Media)
+	}
+	return out, false
+}
+
+// resolveDownloadComments 在下载评论区开关打开时读取一个帖子的评论。
+//
+// 在同一个连接里最多读 maxCommentPages 页（每页 50 条），避免一次创建
+// 成百上千个任务；更老的评论留给用户手动处理。
+func resolveDownloadComments(
+	ctx context.Context,
+	session mtproto.Session,
+	target link.Target,
+) (*mtproto.CommentsResult, error) {
+	commentCtx, cancel := context.WithTimeout(ctx, commentResolveTimeout)
+	defer cancel()
+	return session.ResolveComments(commentCtx, target, mtproto.CommentsOptions{
+		Limit:    50,
+		All:      true,
+		MaxPages: maxCommentPages,
+	})
+}
+
+// enqueueMedia 把一条媒体落库并入队，结果写入 resp。
+//
+// 普通帖子媒体与评论区媒体共用这条路径：评论区媒体传入讨论组 chat，
+// link 已由 ResolveComments 填成评论消息自己的链接。
+func (m *Manager) enqueueMedia(
+	db *database.DB,
+	session mtproto.Session,
+	accountID int64,
+	chat mtproto.Peer,
+	media *mtproto.Media,
+	fallbackLink string,
+	fallbackMessageID int,
+	overwrite bool,
+	allowOverLimit bool,
+	resp *CreateResult,
+) {
+	if media == nil {
+		return
+	}
+	link := media.Link
+	if link == "" {
+		link = fallbackLink
+	}
+	if link == "" {
+		resp.Skipped = append(resp.Skipped, Skip{Link: fallbackLink, Reason: "无法生成媒体下载链接"})
+		return
+	}
+	if !media.Downloadable && !allowOverLimit {
+		resp.Skipped = append(resp.Skipped, Skip{Link: link, Reason: "超过当前账号的单文件上限"})
+		return
+	}
+
+	messageID := media.MessageID
+	if messageID == 0 {
+		messageID = fallbackMessageID
+	}
+	thumbnailURL := ""
+	thumbKey := ""
+	if media.Thumb != nil {
+		thumbnailURL = m.mediaURL(session, *media.Thumb)
+		thumbKey = thumbcache.Key(*media.Thumb)
+	}
+	previewURL := ""
+	previewKey := ""
+	if media.Preview != nil {
+		previewURL = m.mediaURL(session, *media.Preview)
+		previewKey = thumbcache.Key(*media.Preview)
+	}
+
+	task := &database.DownloadTask{
+		Link:      link,
+		AccountID: accountID,
+		ChatID:    chat.ID,
+		ChatTitle: chat.Title,
+		MessageID: messageID,
+		FileName:  media.FileName,
+		FileSize:  media.Size,
+		Kind:      string(media.Kind),
+		MIME:      media.MIME,
+		Status:    database.DownloadStatusPending,
+		Overwrite: overwrite,
+		// 记录强制标记：任务执行前会重新解析，需要它来跳过上限校验。
+		AllowOverLimit: allowOverLimit,
+		ThumbnailURL:   thumbnailURL,
+		PreviewURL:     previewURL,
+		ThumbKey:       thumbKey,
+		PreviewKey:     previewKey,
+	}
+	created, err := db.CreateDownloadTask(task)
+	if err != nil {
+		resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
+		return
+	}
+	if created {
+		resp.Created = append(resp.Created, task.ID)
+		m.publishTaskUpdate(task.ID)
+		m.enqueue(task.ID)
+		return
+	}
+
+	// 已存在的任务如果本次被要求强制下载，补上标记，后续执行/重试才能跳过上限。
+	if allowOverLimit {
+		if err := db.UpdateDownloadTask(task.ID, map[string]any{"allow_over_limit": true}); err != nil {
+			resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
+			return
+		}
+		task.AllowOverLimit = true
+	}
+
+	// 覆盖模式：已有任务处于可重跑状态时重置后重新入队，
+	// 否则（下载中/排队中）只复用，避免打断正在执行的任务。
+	if overwrite {
+		switch {
+		case task.Status == database.DownloadStatusPending:
+			// 已经排队但还没开始：只更新开关，不能再 enqueue 一次。
+			if err := db.UpdateDownloadTask(task.ID, map[string]any{"overwrite": true}); err != nil {
+				resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
+				return
+			}
+		case canRestartTask(task.Status):
+			if err := db.UpdateDownloadTask(task.ID, map[string]any{
+				"status":    database.DownloadStatusPending,
+				"offset":    0,
+				"speed":     0,
+				"error":     "",
+				"save_path": "",
+				"overwrite": true,
+			}); err != nil {
+				resp.Failed = append(resp.Failed, Failure{Link: link, Error: err.Error()})
+				return
+			}
+			resp.Restarted = append(resp.Restarted, task.ID)
+			m.publishTaskUpdate(task.ID)
+			m.enqueue(task.ID)
+			return
+		}
+	}
+	resp.Existing = append(resp.Existing, task.ID)
 }
 
 // taskThumbnailSlots 限制同时抓取缩略图的数量：列表首屏可能一次可见多行，
@@ -479,6 +672,90 @@ func (m *Manager) Thumbnail(ctx context.Context, id uint) ([]byte, error) {
 	return data, nil
 }
 
+// OpenFile 打开一个已完成任务的媒体文件，供 HTTP 层按 Range 流式读取。
+//
+// 只允许 done 且有 save_path 的任务；路径会解析符号链接后校验，必须位于
+// 下载根目录内，避免历史数据或链接把读取带出下载目录。调用方负责关闭文件。
+func (m *Manager) OpenFile(_ context.Context, id uint) (*os.File, File, error) {
+	task, err := loadTask(id)
+	if err != nil {
+		return nil, File{}, err
+	}
+	if task.Status != database.DownloadStatusDone {
+		return nil, File{}, fmt.Errorf("%w：任务尚未下载完成，暂不可读取文件", ErrConflict)
+	}
+
+	path, err := m.containedFilePath(task.SavePath)
+	if err != nil {
+		return nil, File{}, err
+	}
+
+	file, err := os.Open(path)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, File{}, ErrFileNotFound
+		}
+		return nil, File{}, fmt.Errorf("打开文件: %w", err)
+	}
+	info, err := file.Stat()
+	if err != nil {
+		_ = file.Close()
+		return nil, File{}, fmt.Errorf("读取文件信息: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		_ = file.Close()
+		return nil, File{}, ErrFileNotFound
+	}
+
+	return file, File{
+		Name:    filepath.Base(path),
+		MIME:    task.MIME,
+		Size:    info.Size(),
+		ModTime: info.ModTime(),
+	}, nil
+}
+
+// containedFilePath 把任务记录的 save_path 解析成下载根目录内的真实路径。
+//
+// 先对根目录与目标同时 EvalSymlinks，再用 filepath.Rel 判断包含关系：
+// 这样既能拦住 "../" 逃逸，也能拦住根目录内指向外部的符号链接。
+func (m *Manager) containedFilePath(savePath string) (string, error) {
+	if strings.TrimSpace(savePath) == "" {
+		return "", ErrFileNotFound
+	}
+
+	root, err := filepath.Abs(m.rootDir)
+	if err != nil {
+		return "", fmt.Errorf("解析下载目录: %w", err)
+	}
+	target, err := filepath.Abs(savePath)
+	if err != nil {
+		return "", ErrFileNotFound
+	}
+
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", ErrFileNotFound
+		}
+		return "", fmt.Errorf("解析下载目录: %w", err)
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return "", ErrFileNotFound
+		}
+		return "", fmt.Errorf("解析文件路径: %w", err)
+	}
+
+	rel, err := filepath.Rel(realRoot, realTarget)
+	if err != nil || rel == ".." || filepath.IsAbs(rel) ||
+		strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", ErrFileNotFound
+	}
+	return realTarget, nil
+}
+
 // saveThumbKey 把缓存键写回任务；失败只影响下次是否重新解析。
 func (m *Manager) saveThumbKey(id uint, key string) {
 	db, err := utils.OpenDatabase()
@@ -543,6 +820,31 @@ func (m *Manager) List(ctx context.Context, query ListQuery) ([]Task, error) {
 		out = append(out, m.snapshot(task))
 	}
 	return out, nil
+}
+
+// Stats 返回运行中任务的合计速度与数量。
+//
+// 数据只来自内存里的 downloadRun，不读数据库：这样总速度与任务卡片上的
+// speed 同源，不会出现「标题总速度」和各行相加对不上的情况。锁顺序与
+// snapshot 一致：先在 m.mu 下取出 run 列表，释放后再逐个读实时字段。
+func (m *Manager) Stats() Stats {
+	m.mu.Lock()
+	runs := make([]*downloadRun, 0, len(m.runs))
+	for _, run := range m.runs {
+		runs = append(runs, run)
+	}
+	m.mu.Unlock()
+
+	stats := Stats{}
+	for _, run := range runs {
+		speed, counted := run.currentSpeed()
+		if !counted {
+			continue
+		}
+		stats.Running++
+		stats.TotalSpeed += speed
+	}
+	return stats
 }
 
 // get 返回单个任务，带运行中的实时进度。
@@ -721,8 +1023,35 @@ func (m *Manager) snapshot(task database.DownloadTask) Task {
 	return out
 }
 
+// downloadLimits 读取并行文件数与单文件线程数；读取失败时退回启动参数与默认值。
+func (m *Manager) downloadLimits() (workers, threads int) {
+	workers, threads = m.workers, DefaultThreads
+	db, err := utils.OpenDatabase()
+	if err != nil {
+		return
+	}
+	defer db.Close()
+
+	store := config.NewStore(db)
+	if value, err := store.Int(config.KeyDownloadWorkers); err == nil {
+		workers = clampWorkers(value)
+	}
+	if value, err := store.Int(config.KeyDownloadThreads); err == nil {
+		threads = clampThreads(value)
+	}
+	return
+}
+
 // execute 执行一条任务：重新解析消息拿最新的文件引用，然后下载。
 func (m *Manager) execute(id uint) {
+	// 并行文件数来自 settings，每次执行前刷新一次；排队中的任务等这里放行。
+	workers, threads := m.downloadLimits()
+	m.limiter.setLimit(workers)
+	if !m.limiter.acquire(m.ctx) {
+		return
+	}
+	defer m.limiter.release()
+
 	db, err := utils.OpenDatabase()
 	if err != nil {
 		return
@@ -818,7 +1147,7 @@ func (m *Manager) execute(id uint) {
 		fail("该消息没有可下载的媒体")
 		return
 	}
-	if !media.Downloadable {
+	if !media.Downloadable && !task.AllowOverLimit {
 		fail("超过当前账号的单文件上限")
 		return
 	}
@@ -828,7 +1157,7 @@ func (m *Manager) execute(id uint) {
 		RootDir: m.rootDir,
 		// 一个任务就是一个文件：并发交给队列控制，这里固定 1。
 		Concurrency: 1,
-		Threads:     downloadThreads,
+		Threads:     threads,
 		PoolSize:    downloadPoolSize,
 		Force:       task.Overwrite,
 		Overwrite:   task.Overwrite,
@@ -1033,6 +1362,18 @@ func (r *downloadRun) progress() (offset, speed int64) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.offset, r.speed
+}
+
+// currentSpeed 返回最近一次采样的速度；已暂停或已删除的 run 不计入总速度。
+//
+// 判定和取值在同一次加锁里完成，避免暂停标记刚置上时仍被算进总速度。
+func (r *downloadRun) currentSpeed() (speed int64, counted bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.paused || r.deleted {
+		return 0, false
+	}
+	return r.speed, true
 }
 
 func (r *downloadRun) offsetValue() int64 {

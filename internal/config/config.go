@@ -32,6 +32,29 @@ const (
 	// KeyAPICustomEnabled 控制是否启用自定义 api_id / api_hash；
 	// 关闭时即使配置了凭据也使用内置 desktop。
 	KeyAPICustomEnabled = "api_custom_enabled"
+	// KeyDownloadOverwrite 控制下载时是否覆盖同名文件（下载页的「覆盖同名文件」开关）。
+	KeyDownloadOverwrite = "download_overwrite"
+	// KeyDownloadExpandTextLinks 控制解析时是否展开正文里的文字链接
+	// （下载页的「展开正文里的链接」开关）。
+	KeyDownloadExpandTextLinks = "download_expand_text_links"
+	// KeyDownloadAutoPreview 控制打开下载页时是否自动解析草稿
+	// （下载页的「自动解析」行为）。
+	KeyDownloadAutoPreview = "download_auto_preview"
+	// KeyDownloadComments 控制下载频道帖子时是否同时下载评论区的媒体。
+	KeyDownloadComments = "download_comments"
+	// KeyDownloadWorkers 是同时下载的文件数（1-8）。
+	KeyDownloadWorkers = "download_workers"
+	// KeyDownloadThreads 是单个文件的分块下载线程数（1-8）。
+	KeyDownloadThreads = "download_threads"
+	// KeyWebTheme 是网页主题：light（浅色）/ dark（深色）/ system（跟随系统）。
+	KeyWebTheme = "web_theme"
+	// KeyWebTitleSpeed 控制是否在浏览器标签标题中显示当前总下载速度。
+	KeyWebTitleSpeed = "web_title_speed"
+
+	// DefaultWebTheme 是网页主题未配置时的默认值。
+	DefaultWebTheme = "system"
+	// DefaultWebTitleSpeed 默认不在标题中显示速度。
+	DefaultWebTitleSpeed = "false"
 
 	// MaskedPassword 是配置值里密码被脱敏后的占位符。
 	// API 读取代理时返回 ***；写回时若密码仍是它，服务端沿用已保存的密码。
@@ -92,6 +115,62 @@ var items = []Item{
 		Type:        TypeBoolean,
 		Default:     "false",
 		Description: "是否使用 api_id / api_hash；关闭时即使配置了凭据也使用内置 desktop",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyDownloadOverwrite,
+		Type:        TypeBoolean,
+		Default:     "false",
+		Description: "下载时覆盖同名文件：直接替换目标文件并丢弃已有 .part 从零下载；下载页的「覆盖同名文件」开关即此项",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyDownloadExpandTextLinks,
+		Type:        TypeBoolean,
+		Default:     "false",
+		Description: "解析消息时展开正文里的文字链接（只展开一层）；下载页的「展开正文里的链接」开关即此项",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyDownloadAutoPreview,
+		Type:        TypeBoolean,
+		Default:     "true",
+		Description: "打开下载页且草稿非空时自动解析一次（刷新摘要与封面）；关闭后需手动点「解析预览」",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyDownloadComments,
+		Type:        TypeBoolean,
+		Default:     "false",
+		Description: "通过下载页创建任务时，频道帖子会同时下载评论区里的媒体文件（最多读取前 500 条评论、下载前 100 个媒体；单条媒体下载不会展开评论区）",
+		Validate:    ValidateBool,
+	},
+	{
+		Key:         KeyDownloadWorkers,
+		Type:        TypeInteger,
+		Default:     "1",
+		Description: "同时下载的文件数（1-8）；对应启动参数 --max-concurrency，运行中修改对新任务生效",
+		Validate:    ValidateDownloadCount,
+	},
+	{
+		Key:         KeyDownloadThreads,
+		Type:        TypeInteger,
+		Default:     "4",
+		Description: "单个文件的分块下载线程数（1-8）；调大可能更容易触发 Telegram 限流",
+		Validate:    ValidateDownloadCount,
+	},
+	{
+		Key:         KeyWebTheme,
+		Type:        TypeString,
+		Default:     DefaultWebTheme,
+		Description: "网页主题：light（浅色）/ dark（深色）/ system（跟随系统）",
+		Validate:    ValidateWebTheme,
+	},
+	{
+		Key:         KeyWebTitleSpeed,
+		Type:        TypeBoolean,
+		Default:     DefaultWebTitleSpeed,
+		Description: "是否在浏览器标签标题中显示当前总下载速度；无任务时显示「无活动」",
 		Validate:    ValidateBool,
 	},
 	{
@@ -232,6 +311,30 @@ func (s *Store) Bool(key string) (bool, error) {
 	return parsed, nil
 }
 
+// Int 读取整数配置项；未配置时返回 Item.Default。
+func (s *Store) Int(key string) (int, error) {
+	item, exists := Lookup(key)
+	if !exists {
+		return 0, unknownKeyError(key)
+	}
+	if item.Type != TypeInteger {
+		return 0, fmt.Errorf("配置项 %s 不是整数类型", key)
+	}
+
+	value, ok, err := s.Get(key)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		value = item.Default
+	}
+	parsed, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("配置项 %s 的值 %q 不是整数", key, value)
+	}
+	return parsed, nil
+}
+
 // Proxy 返回实际生效的代理地址：http_proxy_enabled=false 时返回空串（直连）。
 // 两项都未配置时分别取 Item.Default（开关默认启用、地址默认空）。
 func (s *Store) Proxy() (string, error) {
@@ -258,6 +361,10 @@ func (s *Store) Set(key, value string) error {
 	}
 	value = strings.TrimSpace(value)
 	if item.Type == TypeBoolean {
+		value = strings.ToLower(value)
+	}
+	if key == KeyWebTheme {
+		// 主题值统一存小写，避免 light / Light 在数据库里出现两种写法。
 		value = strings.ToLower(value)
 	}
 	if item.Validate != nil {
@@ -389,6 +496,24 @@ func ValidateBool(raw string) error {
 		return nil
 	}
 	return fmt.Errorf("只接受 true 或 false，当前为 %q", raw)
+}
+
+// ValidateWebTheme 校验网页主题：light / dark / system（大小写不敏感）。
+func ValidateWebTheme(raw string) error {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "light", "dark", "system":
+		return nil
+	}
+	return fmt.Errorf("只接受 light、dark 或 system，当前为 %q", raw)
+}
+
+// ValidateDownloadCount 校验下载并发数（并行文件数/线程数）：1-8 的整数。
+func ValidateDownloadCount(raw string) error {
+	value, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || value < 1 || value > 8 {
+		return fmt.Errorf("必须是 1-8 的整数，当前为 %q", raw)
+	}
+	return nil
 }
 
 // ValidateAccountID 校验账号 ID：必须是正整数。

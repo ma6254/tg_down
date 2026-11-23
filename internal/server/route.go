@@ -44,12 +44,38 @@ func (s *Server) routes() *http.ServeMux {
 	// 链接解析：等价于 download -u <链接>，不落库、不开始下载。
 	mux.HandleFunc("POST /api/v1/links/preview", s.handlePreviewLinks)
 
+	// 评论区：读取频道帖子关联讨论组里的评论（只读）。
+	mux.HandleFunc("GET /api/v1/links/comments", s.handleComments)
+
 	// 下载任务：创建、列表、详情、暂停/恢复/重试与删除。
 	mux.HandleFunc("POST /api/v1/downloads", s.handleDownloadCreate)
 	mux.HandleFunc("GET /api/v1/downloads", s.handleDownloadList)
+
+	// 下载页输入草稿与历史：静态段（draft / history）必须优先于 {id}。
+	// Go 1.22 的 ServeMux 按「具体度」匹配，字面量段天然胜出。
+	mux.HandleFunc("GET /api/v1/downloads/draft", s.handleDownloadDraftGet)
+	mux.HandleFunc("PUT /api/v1/downloads/draft", s.handleDownloadDraftPut)
+	mux.HandleFunc("GET /api/v1/downloads/history", s.handleDownloadHistoryList)
+	mux.HandleFunc("POST /api/v1/downloads/history", s.handleDownloadHistoryCreate)
+	mux.HandleFunc("DELETE /api/v1/downloads/history", s.handleDownloadHistoryClear)
+	mux.HandleFunc("GET /api/v1/downloads/history/{id}", s.handleDownloadHistoryGet)
+	mux.HandleFunc("GET /api/v1/downloads/history/{id}/cover", s.handleDownloadHistoryCover)
+	mux.HandleFunc("DELETE /api/v1/downloads/history/{id}", s.handleDownloadHistoryDelete)
+
+	// 下载队列总览：运行中任务的合计速度与数量（字面量段优先于 {id}）。
+	mux.HandleFunc("GET /api/v1/downloads/stats", s.handleDownloadStats)
+	// 历史速度：内存采样的分桶曲线，供前端画速度图。
+	mux.HandleFunc("GET /api/v1/downloads/stats/history", s.handleDownloadSpeedHistory)
+	// 清空平均/峰值统计：保留曲线样本，只重置统计起点。
+	mux.HandleFunc("POST /api/v1/downloads/stats/reset", s.handleDownloadSpeedStatsReset)
+
 	mux.HandleFunc("GET /api/v1/downloads/{id}", s.handleDownloadGet)
 	mux.HandleFunc("POST /api/v1/downloads/{id}/{action}", s.handleDownloadControl)
-	mux.HandleFunc("GET /api/v1/downloads/{id}/thumbnail", s.handleDownloadThumbnail)
+	// 任务缩略图原来注册成 GET …/{id}/thumbnail，会与 GET …/history/{id}
+	// 在 /downloads/history/thumbnail 上互相冲突（ServeMux 判定两者互不更具体）。
+	// 这里放宽成两段通配，由 handleDownloadSubresource 校验第二段；
+	// 字面量模式 …/history/{id} 更具体，仍然优先命中。
+	mux.HandleFunc("GET /api/v1/downloads/{id}/{sub}", s.handleDownloadSubresource)
 	mux.HandleFunc("DELETE /api/v1/downloads/{id}", s.handleDownloadDelete)
 
 	// 实时事件：SSE 推送任务状态与进度，前端断线后重连并重新拉取列表。

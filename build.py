@@ -202,7 +202,7 @@ def build_go(args: argparse.Namespace, version: str, commit: str, when: str) -> 
     # 默认加构建标签，让 webembed 用 go:embed 把 dist.zip 打进二进制；--no-web 时跳过。
     tags: list[str] = [] if args.no_web else ["-tags", "webdist"]
     cmd = [
-        "go", "build", "-trimpath", *tags,
+        "go", "build", "-v", "-trimpath", *tags,
         "-ldflags", " ".join(ldflags), "-o", str(output), ".",
     ]
     env = dict(os.environ)

@@ -1,6 +1,8 @@
 package server
 
 import (
+	"time"
+
 	"github.com/ma6254/tg_down/internal/download/manager"
 )
 
@@ -40,11 +42,42 @@ func NewDownloadTasks(tasks []manager.Task) []DownloadTask {
 	return out
 }
 
+// NewDownloadStats 把下载队列总览转换成接口结构。
+func NewDownloadStats(stats manager.Stats) DownloadStats {
+	return DownloadStats{
+		TotalSpeed:   stats.TotalSpeed,
+		RunningTasks: stats.Running,
+	}
+}
+
+// NewDownloadSpeedHistory 把领域历史速度转换成接口结构。
+func NewDownloadSpeedHistory(history manager.SpeedHistory) DownloadSpeedHistory {
+	points := make([]DownloadSpeedPoint, 0, len(history.Points))
+	for _, point := range history.Points {
+		points = append(points, DownloadSpeedPoint{
+			At:           point.At.Unix(),
+			TotalSpeed:   point.Speed,
+			RunningTasks: point.Running,
+		})
+	}
+	return DownloadSpeedHistory{
+		From:           history.From.Unix(),
+		To:             history.To.Unix(),
+		Bucket:         int(history.Bucket / time.Second),
+		SampleInterval: int(history.SampleInterval / time.Second),
+		StatsSince:     history.StatsSince.Unix(),
+		AverageSpeed:   history.AverageSpeed,
+		PeakSpeed:      history.PeakSpeed,
+		Points:         points,
+	}
+}
+
 // NewDownloadCreateResponse 把创建结果转换成接口结构。
 func NewDownloadCreateResponse(result manager.CreateResult) DownloadCreateResponse {
 	resp := DownloadCreateResponse{
-		Created:  result.Created,
-		Existing: result.Existing,
+		Created:   result.Created,
+		Restarted: result.Restarted,
+		Existing:  result.Existing,
 	}
 	for _, skip := range result.Skipped {
 		resp.Skipped = append(resp.Skipped, DownloadSkip{Link: skip.Link, Reason: skip.Reason})

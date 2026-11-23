@@ -92,6 +92,15 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 		return err
 	}
 
+	// 历史数据修正：旧版本把覆盖开关计入去重 hash，同内容可能留下两行。
+	if err := normalizeDownloadHistory(); err != nil {
+		fmt.Fprintf(os.Stderr, "规范化下载历史失败（继续启动）: %v\n", err)
+	}
+	// 把旧草稿里的开关迁移到 settings，并确保下载相关配置存在。
+	if err := ensureDownloadSettings(opts.MaxConcurrency); err != nil {
+		fmt.Fprintf(os.Stderr, "初始化下载设置失败（继续启动）: %v\n", err)
+	}
+
 	// SSE 广播器：下载管理器往这里发事件，/api/v1/events 从这里订阅。
 	hub := server.NewEventHub()
 
@@ -133,20 +142,35 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 		DeleteAccount: deleteAccount,
 		// 链接解析：download -u <链接> 的 HTTP 版（联网查询，不落库）。
 		PreviewLinks: previewLinks,
+		// 评论区：读取频道帖子关联讨论组里的评论（联网查询，不落库）。
+		GetComments: getComments,
 		// 系统配置：config list / set / unset 的 HTTP 版。
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,
 		// 下载任务：创建后由后台 worker 执行，进度通过 SSE 推送。
-		CreateDownloads: createDownloads(mgr),
-		ListDownloads:   listDownloads(mgr),
-		GetDownload:     getDownload(mgr),
-		ControlDownload: controlDownload(mgr),
+		CreateDownloads:         createDownloads(mgr),
+		ListDownloads:           listDownloads(mgr),
+		GetDownloadStats:        downloadStats(mgr),
+		GetDownloadSpeedHistory: downloadSpeedHistory(mgr),
+		ResetDownloadSpeedStats: resetDownloadSpeedStats(mgr),
+		GetDownload:             getDownload(mgr),
+		ControlDownload:         controlDownload(mgr),
 		DeleteDownload: func(_ context.Context, id uint, deleteFile bool) error {
 			return mapDownloadError(mgr.Remove(id, deleteFile))
 		},
-		// 实时事件与任务缩略图：前者由 hub 直接提供，后者按任务按需生成。
+		// 下载页草稿与历史：输入自动保存、最近解析批次回填。
+		GetDownloadDraft:        getDownloadDraft,
+		SaveDownloadDraft:       saveDownloadDraft,
+		ListDownloadHistory:     listDownloadHistory,
+		GetDownloadHistory:      getDownloadHistory,
+		RecordDownloadHistory:   recordDownloadHistory,
+		DeleteDownloadHistory:   deleteDownloadHistory,
+		ClearDownloadHistory:    clearDownloadHistory,
+		GetDownloadHistoryCover: getDownloadHistoryCover,
+		// 实时事件与任务子资源：前者由 hub 直接提供，后者按任务按需生成。
 		EventHub:             hub,
 		GetDownloadThumbnail: downloadThumbnail(mgr),
+		GetDownloadFile:      downloadFile(mgr),
 		// 前端接入方式随 Web 构建产物一起接入（proxy / dir / embed）。
 	})
 

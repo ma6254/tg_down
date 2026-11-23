@@ -3,7 +3,7 @@
   "info": {
     "title": "tg_down API",
     "version": "__VERSION__",
-    "description": "tg_down 的本地 HTTP 接口。默认只监听 127.0.0.1，此时不需要鉴权；对外监听时必须配置 --auth-token，此后 /api/* 要求 Authorization: Bearer <token>。\n\n调试：点右上角 Authorize 填入 --auth-token 的值，再对接口点 Try it out；token 保存在浏览器 localStorage，刷新后仍有效。\n\n本文件只描述已实现的接口：健康检查、系统信息、账号、设置、链接解析、媒体缩略图、下载任务与 SSE。规划中但尚未实现的接口（Bot API 接入、手机号/验证码登录、会话与消息浏览）见 doc/api.md 的对应章节。"
+    "description": "tg_down 的本地 HTTP 接口。默认只监听 127.0.0.1，此时不需要鉴权；对外监听时必须配置 --auth-token，此后 /api/* 要求 Authorization: Bearer <token>。\n\n调试：点右上角 Authorize 填入 --auth-token 的值，再对接口点 Try it out；token 保存在浏览器 localStorage，刷新后仍有效。\n\n本文件只描述已实现的接口：健康检查、系统信息、账号、设置、链接解析、媒体缩略图、下载任务、SSE 与下载页草稿/历史。规划中但尚未实现的接口（Bot API 接入、手机号/验证码登录、会话与消息浏览）见 doc/api.md 的对应章节。"
   },
   "servers": [
     {
@@ -26,7 +26,7 @@
     },
     {
       "name": "downloads",
-      "description": "视频/文件下载任务"
+      "description": "下载任务、下载页草稿与历史"
     },
     {
       "name": "settings",
@@ -695,6 +695,20 @@
                           "chat": {
                             "type": "object"
                           },
+                          "comment_section": {
+                            "type": "object",
+                            "description": "频道帖子的评论区摘要；普通消息/评论链接省略",
+                            "properties": {
+                              "available": {
+                                "type": "boolean",
+                                "description": "帖子是否开启了评论区"
+                              },
+                              "count": {
+                                "type": "integer",
+                                "description": "评论总数"
+                              }
+                            }
+                          },
                           "text": {
                             "type": "string"
                           },
@@ -775,6 +789,11 @@
                               },
                               "downloadable": {
                                 "type": "boolean"
+                              },
+                              "thumb_key": {
+                                "type": "string",
+                                "pattern": "^[0-9a-f]{64}$",
+                                "description": "缩略图磁盘缓存键（64 位十六进制），供下载页历史取封面。"
                               }
                             }
                           },
@@ -802,6 +821,11 @@
                                 },
                                 "downloadable": {
                                   "type": "boolean"
+                                },
+                                "thumb_key": {
+                                  "type": "string",
+                                  "pattern": "^[0-9a-f]{64}$",
+                                  "description": "缩略图磁盘缓存键（64 位十六进制），供下载页历史取封面。"
                                 }
                               }
                             }
@@ -861,6 +885,106 @@
           },
           "501": {
             "description": "服务端没有接入链接解析",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "连接 Telegram 失败或 Telegram 报错",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "504": {
+            "$ref": "#/components/responses/GatewayTimeout"
+          }
+        }
+      }
+    },
+    "/api/v1/links/comments": {
+      "get": {
+        "tags": [
+          "links"
+        ],
+        "summary": "读取频道帖子的评论区",
+        "description": "读取频道帖子关联讨论组里的评论；只读，不创建下载任务。没有开启评论时返回 available=false 且 comments=[]。",
+        "operationId": "getComments",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "link",
+            "in": "query",
+            "required": true,
+            "description": "频道帖子链接",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "一次返回的评论数，默认 20，最大 50",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 50,
+              "default": 20
+            }
+          },
+          {
+            "name": "offset_id",
+            "in": "query",
+            "required": false,
+            "description": "分页游标：返回比该消息更旧的评论，0 表示从最新开始",
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "default": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "评论区内容；没有开启评论时 available=false 且 comments=[]",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CommentsResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "409": {
+            "description": "没有当前账号，或账号的 session 不可用",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入评论区",
             "content": {
               "application/json": {
                 "schema": {
@@ -989,12 +1113,17 @@
                   "overwrite": {
                     "type": "boolean",
                     "default": false,
-                    "description": "为 true 时覆盖同名文件并从零下载；默认遇到同名文件会追加 (1) 序号"
+                    "description": "一次性覆盖：为 true 时覆盖同名文件并从零下载；实际生效值还会与系统配置 download_overwrite 取或。"
                   },
                   "single": {
                     "type": "boolean",
                     "default": false,
                     "description": "为 true 时只下载链接指向的那条消息，不展开相册；默认与 CLI 一致，相册链接展开成整组任务"
+                  },
+                  "allow_over_limit": {
+                    "type": "boolean",
+                    "default": false,
+                    "description": "为 true 时跳过本地单文件上限预检并强制创建任务；Telegram 服务端仍可能拒绝，失败会体现在任务 error"
                   }
                 }
               },
@@ -1002,7 +1131,8 @@
                 "links": [
                   "https://t.me/JPD233/2522"
                 ],
-                "overwrite": false
+                "overwrite": false,
+                "allow_over_limit": false
               }
             }
           }
@@ -1021,6 +1151,13 @@
                         "type": "integer"
                       },
                       "description": "新建并已入队的任务 ID"
+                    },
+                    "restarted": {
+                      "type": "array",
+                      "items": {
+                        "type": "integer"
+                      },
+                      "description": "覆盖模式下被重置并重新入队的已有任务 ID；done/failed/paused 会被重置，running/pending 不打断。"
                     },
                     "existing": {
                       "type": "array",
@@ -1156,6 +1293,162 @@
           },
           "400": {
             "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/stats": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载总速度",
+        "description": "返回当前运行中下载任务的合计速度与数量。数据来自进程内存里的实时进度，与任务列表里的 speed 同源，不查数据库；没有运行中的任务时返回 0。适合轮询调用，响应不缓存。",
+        "operationId": "getDownloadStats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "下载队列总览",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadStats"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/stats/history": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "历史下载速度",
+        "description": "返回最近一段时间的合计下载速度曲线。服务端每 1 秒采样一次，保留最近 24 小时，数据只在内存中，服务重启后清空。没有样本时 points 为空数组。",
+        "operationId": "getDownloadSpeedHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "from",
+            "in": "query",
+            "required": false,
+            "description": "起始时间，Unix 秒；默认当前时间前 30 分钟。",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "to",
+            "in": "query",
+            "required": false,
+            "description": "结束时间，Unix 秒；默认当前时间，晚于当前时间会收敛到当前。",
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          },
+          {
+            "name": "bucket",
+            "in": "query",
+            "required": false,
+            "description": "聚合粒度（秒），1-3600；省略时自动选择，保证点数不超过 300。",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 3600
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史速度曲线",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadSpeedHistory"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/stats/reset": {
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "清空平均/峰值速度统计",
+        "description": "重置平均速度和峰值速度的统计起点；速度曲线样本保留，只影响后续 average_speed / peak_speed 的计算。",
+        "operationId": "resetDownloadSpeedStats",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "清空成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadSpeedStatsReset"
+                }
+              }
+            }
           },
           "401": {
             "$ref": "#/components/responses/Unauthorized"
@@ -1446,6 +1739,93 @@
         }
       }
     },
+    "/api/v1/downloads/{id}/file": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "读取已下载的媒体文件",
+        "description": "流式返回已完成任务的原始文件，支持 Range 与 HEAD。文件按任务的 save_path 读取，并校验真实路径位于下载根目录内；任务未完成返回 409，任务或文件不存在返回 404。图片、音视频与 PDF 使用 Content-Disposition: inline，其余为 attachment。",
+        "operationId": "getDownloadFile",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "name": "Range",
+            "in": "header",
+            "required": false,
+            "description": "字节范围，例如 bytes=0-1048575；视频/音频拖动进度条时使用。",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "文件内容；Content-Type 取自任务 mime，可能为 image/*、video/*、audio/* 或 application/octet-stream",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "206": {
+            "description": "Range 响应",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "description": "任务尚未下载完成",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "服务端没有接入下载功能",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/events": {
       "get": {
         "tags": [
@@ -1569,6 +1949,451 @@
           },
           "501": {
             "description": "服务端没有接入配置写入",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/draft": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "读取下载页输入草稿",
+        "description": "返回下载页的 links 与上次解析摘要缓存（只读展示）。两个开关（download_overwrite / download_expand_text_links）已迁移到系统配置，不在草稿里。没有草稿时返回默认值（200），不是 404。",
+        "operationId": "getDownloadDraft",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "当前草稿（没有时是默认值）",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadDraft"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载草稿",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "put": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "保存下载页输入草稿",
+        "description": "全量替换 links。cache 省略时保留已有摘要（避免自动保存把摘要冲掉），cache: null 显式清除；cache 非法时丢弃本次缓存但仍保存输入。links 超过 256 KiB 或 500 行时返回 400。",
+        "operationId": "saveDownloadDraft",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadDraftInput"
+              },
+              "example": {
+                "links": "https://t.me/JPD233/2522",
+                "expand_text_links": false,
+                "overwrite": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "保存后的完整草稿",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadDraft"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载草稿",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/history": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载页输入历史",
+        "description": "按最近使用时间倒序返回历史输入批次，只保留最近 20 条。列表只给第一行、行数、使用次数与摘要，不返回完整 links 与缓存条目；回填时用详情接口取完整文本。",
+        "operationId": "listDownloadHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "description": "返回条数，默认 20，最大 20。",
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 20
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史列表",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadHistoryList"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "记录一次成功解析的输入",
+        "description": "前端在「解析预览」成功后调用。服务端按「归一后的 links」去重（两个开关不参与）：内容重复时更新 last_used_at、use_count、开关快照与摘要并返回 200，新内容返回 201。cache 可选，来自预览响应；服务端按白名单裁剪，非法时丢弃缓存但保留输入。",
+        "operationId": "recordDownloadHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DownloadHistoryInput"
+              },
+              "example": {
+                "links": "https://t.me/JPD233/2522",
+                "expand_text_links": false,
+                "overwrite": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "内容重复，已更新使用时间与次数",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadHistoryDetail"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "新建历史记录",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadHistoryDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "清空下载历史",
+        "description": "删除全部历史输入记录，返回删除条数。",
+        "operationId": "clearDownloadHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "清空结果",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok",
+                    "removed"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    },
+                    "removed": {
+                      "type": "integer"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/history/{id}": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载历史详情",
+        "description": "返回单条历史的完整 links 与解析摘要缓存，供下载页回填；回填只恢复 links，两个开关是全局配置。缓存只用于展示，不直接用于创建下载任务。",
+        "operationId": "getDownloadHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "description": "历史记录 ID（GET /api/v1/downloads/history 里的 id）",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "历史详情",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DownloadHistoryDetail"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "删除单条下载历史",
+        "description": "删除一条历史输入记录；记录不存在时返回 404。",
+        "operationId": "deleteDownloadHistory",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "删除成功",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "ok"
+                  ],
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/downloads/history/{id}/cover": {
+      "get": {
+        "tags": [
+          "downloads"
+        ],
+        "summary": "下载历史封面",
+        "description": "返回该条历史第一张封面的 JPEG 字节，来自 <数据目录>/thumbnail 磁盘缓存；缓存键随摘要落库，token 过期或进程重启后仍可读取。记录不存在、没有封面或缓存文件已清理时返回 404。",
+        "operationId": "getDownloadHistoryCover",
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "封面字节",
+            "content": {
+              "image/jpeg": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "501": {
+            "description": "服务端没有接入下载历史封面",
             "content": {
               "application/json": {
                 "schema": {
@@ -2157,6 +2982,120 @@
           }
         }
       },
+      "DownloadStats": {
+        "type": "object",
+        "required": [
+          "total_speed",
+          "running_tasks"
+        ],
+        "properties": {
+          "total_speed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "所有运行中任务的合计速度，单位 B/s；没有运行中的任务时为 0。"
+          },
+          "running_tasks": {
+            "type": "integer",
+            "description": "当前运行中的任务数。"
+          }
+        }
+      },
+      "DownloadSpeedHistory": {
+        "type": "object",
+        "required": [
+          "from",
+          "to",
+          "bucket",
+          "sample_interval",
+          "stats_since",
+          "average_speed",
+          "peak_speed",
+          "points"
+        ],
+        "properties": {
+          "from": {
+            "type": "integer",
+            "format": "int64",
+            "description": "实际生效的起始时间，Unix 秒。"
+          },
+          "to": {
+            "type": "integer",
+            "format": "int64",
+            "description": "实际生效的结束时间，Unix 秒。"
+          },
+          "bucket": {
+            "type": "integer",
+            "description": "聚合粒度，秒。"
+          },
+          "sample_interval": {
+            "type": "integer",
+            "description": "原始采样间隔，秒。"
+          },
+          "stats_since": {
+            "type": "integer",
+            "format": "int64",
+            "description": "平均/峰值统计起点：上次清空时间或窗口起点，Unix 秒。"
+          },
+          "average_speed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "区间内全部原始样本的平均速度，B/s，含空闲时的 0 值。"
+          },
+          "peak_speed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "区间内单个原始样本的峰值速度，B/s。"
+          },
+          "points": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownloadSpeedPoint"
+            }
+          }
+        }
+      },
+      "DownloadSpeedPoint": {
+        "type": "object",
+        "required": [
+          "at",
+          "total_speed",
+          "running_tasks"
+        ],
+        "properties": {
+          "at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "桶起始时间，Unix 秒。"
+          },
+          "total_speed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "桶内平均合计速度，B/s。"
+          },
+          "running_tasks": {
+            "type": "integer",
+            "description": "桶内最大运行任务数。"
+          }
+        }
+      },
+      "DownloadSpeedStatsReset": {
+        "type": "object",
+        "required": [
+          "ok",
+          "reset_at"
+        ],
+        "properties": {
+          "ok": {
+            "type": "boolean",
+            "description": "清空成功，固定为 true。"
+          },
+          "reset_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "新的平均/峰值统计起点，Unix 秒。"
+          }
+        }
+      },
       "Error": {
         "type": "object",
         "required": [
@@ -2182,6 +3121,426 @@
           "message": {
             "type": "string",
             "example": "接口不存在: /api/v1/nope"
+          }
+        }
+      },
+      "DownloadCacheSummary": {
+        "type": "object",
+        "required": [
+          "total",
+          "ok",
+          "failed",
+          "no_media",
+          "expanded"
+        ],
+        "properties": {
+          "total": {
+            "type": "integer"
+          },
+          "ok": {
+            "type": "integer"
+          },
+          "failed": {
+            "type": "integer"
+          },
+          "no_media": {
+            "type": "integer"
+          },
+          "expanded": {
+            "type": "integer"
+          }
+        }
+      },
+      "DownloadCacheChat": {
+        "type": "object",
+        "required": [
+          "kind",
+          "title"
+        ],
+        "properties": {
+          "kind": {
+            "type": "string",
+            "enum": [
+              "user",
+              "group",
+              "channel"
+            ]
+          },
+          "title": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
+      "DownloadCacheItem": {
+        "type": "object",
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "chat_title": {
+            "type": "string"
+          },
+          "text": {
+            "type": "string",
+            "maxLength": 200,
+            "description": "正文前 200 字。"
+          },
+          "media_kind": {
+            "type": "string",
+            "enum": [
+              "photo",
+              "video",
+              "audio",
+              "document"
+            ]
+          },
+          "file_name": {
+            "type": "string"
+          },
+          "size": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "thumb_key": {
+            "type": "string",
+            "description": "缩略图磁盘缓存键；只接受 64 位十六进制，非法值会被服务端丢弃。",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      },
+      "DownloadCacheFailure": {
+        "type": "object",
+        "required": [
+          "link",
+          "error"
+        ],
+        "properties": {
+          "link": {
+            "type": "string"
+          },
+          "error": {
+            "type": "string",
+            "maxLength": 200
+          }
+        }
+      },
+      "DownloadDraftCache": {
+        "type": "object",
+        "required": [
+          "v",
+          "summary"
+        ],
+        "description": "裁剪后的解析摘要：items ≤ 20、chats ≤ 5、failures ≤ 5，文本/错误各 200 字，序列化后 ≤ 32 KiB。不含缩略图地址、entities 等会过期或敏感的字段。",
+        "properties": {
+          "v": {
+            "type": "integer",
+            "description": "缓存结构版本，当前为 1。"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/DownloadCacheSummary"
+          },
+          "chats": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/DownloadCacheChat"
+            }
+          },
+          "items": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "$ref": "#/components/schemas/DownloadCacheItem"
+            }
+          },
+          "failures": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/DownloadCacheFailure"
+            }
+          }
+        }
+      },
+      "DownloadDraft": {
+        "type": "object",
+        "required": [
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "string",
+            "description": "原始输入文本，一行一条；上限 256 KiB / 500 行。"
+          },
+          "cache": {
+            "$ref": "#/components/schemas/DownloadDraftCache"
+          },
+          "updated_at": {
+            "type": "integer",
+            "format": "int64",
+            "description": "最后保存时间，Unix 秒；从未保存时省略。"
+          }
+        }
+      },
+      "DownloadDraftInput": {
+        "type": "object",
+        "required": [
+          "links"
+        ],
+        "properties": {
+          "links": {
+            "type": "string"
+          },
+          "cache": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DownloadDraftCache"
+              }
+            ],
+            "nullable": true,
+            "description": "省略时保留已有摘要；null 显式清除。"
+          }
+        }
+      },
+      "DownloadHistoryEntry": {
+        "type": "object",
+        "required": [
+          "id",
+          "first_line",
+          "line_count",
+          "expand_text_links",
+          "overwrite",
+          "use_count",
+          "cache_truncated",
+          "created_at",
+          "last_used_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "first_line": {
+            "type": "string",
+            "description": "第一行，截断 160 字符。"
+          },
+          "line_count": {
+            "type": "integer",
+            "description": "非空行数。"
+          },
+          "expand_text_links": {
+            "type": "boolean"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "use_count": {
+            "type": "integer",
+            "description": "被记录/重复使用的次数。"
+          },
+          "summary": {
+            "$ref": "#/components/schemas/DownloadCacheSummary"
+          },
+          "chats": {
+            "type": "array",
+            "maxItems": 5,
+            "items": {
+              "$ref": "#/components/schemas/DownloadCacheChat"
+            }
+          },
+          "cache_truncated": {
+            "type": "boolean",
+            "description": "summary.total 大于缓存的消息条目数（只缓存前 20 条）。"
+          },
+          "created_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "last_used_at": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "title": {
+            "type": "string",
+            "description": "历史卡片标题（消息摘要）：缓存第一条消息的正文/说明（折叠空白、截断 120 字），纯媒体为 [图片]/[视频]/[音频]/[文件]；没有缓存时省略，前端退回 first_line。",
+            "example": "今天的更新：三张现场图"
+          }
+        }
+      },
+      "DownloadHistoryDetail": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/DownloadHistoryEntry"
+          },
+          {
+            "type": "object",
+            "required": [
+              "links"
+            ],
+            "properties": {
+              "links": {
+                "type": "string",
+                "description": "完整输入文本，回填用。"
+              },
+              "cache": {
+                "$ref": "#/components/schemas/DownloadDraftCache"
+              }
+            }
+          }
+        ]
+      },
+      "DownloadHistoryList": {
+        "type": "object",
+        "required": [
+          "items"
+        ],
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DownloadHistoryEntry"
+            }
+          }
+        }
+      },
+      "DownloadHistoryInput": {
+        "type": "object",
+        "required": [
+          "links",
+          "expand_text_links",
+          "overwrite"
+        ],
+        "properties": {
+          "links": {
+            "type": "string"
+          },
+          "expand_text_links": {
+            "type": "boolean"
+          },
+          "overwrite": {
+            "type": "boolean"
+          },
+          "cache": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/DownloadDraftCache"
+              }
+            ],
+            "nullable": true,
+            "description": "可选；非法时丢弃缓存但保留输入。"
+          }
+        }
+      },
+      "CommentsResponse": {
+        "type": "object",
+        "required": [
+          "link",
+          "message_id",
+          "available",
+          "total",
+          "comments"
+        ],
+        "properties": {
+          "link": {
+            "type": "string"
+          },
+          "message_id": {
+            "type": "integer"
+          },
+          "thread_id": {
+            "type": "integer",
+            "description": "讨论组里对应的线程起始消息 ID"
+          },
+          "available": {
+            "type": "boolean",
+            "description": "帖子是否开启了评论区"
+          },
+          "reason": {
+            "type": "string",
+            "description": "available=false 时的原因"
+          },
+          "chat": {
+            "type": "object",
+            "description": "评论区所在的关联讨论组"
+          },
+          "post_chat": {
+            "type": "object",
+            "description": "原帖所在的频道"
+          },
+          "total": {
+            "type": "integer"
+          },
+          "comments": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Comment"
+            }
+          },
+          "next_offset_id": {
+            "type": "integer",
+            "description": "加载更早评论时传给 offset_id；0 表示没有更多"
+          }
+        }
+      },
+      "Comment": {
+        "type": "object",
+        "required": [
+          "id",
+          "date"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "date": {
+            "type": "integer",
+            "description": "Unix 秒"
+          },
+          "sender": {
+            "type": "object"
+          },
+          "text": {
+            "type": "string"
+          },
+          "links": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "entities": {
+            "type": "array",
+            "description": "富文本标注，字段同预览的 entities",
+            "items": {
+              "type": "object"
+            }
+          },
+          "media": {
+            "type": "object",
+            "description": "评论里的媒体（字段同预览的 media）"
+          },
+          "media_error": {
+            "type": "string",
+            "description": "媒体解析失败的原因"
+          },
+          "reply_to": {
+            "$ref": "#/components/schemas/CommentReply"
+          }
+        }
+      },
+      "CommentReply": {
+        "type": "object",
+        "required": [
+          "message_id"
+        ],
+        "properties": {
+          "message_id": {
+            "type": "integer"
+          },
+          "quote": {
+            "type": "string"
           }
         }
       }

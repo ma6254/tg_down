@@ -3,7 +3,8 @@
 Telegram 下载工具：Go 后端 + React/TypeScript 前端。单用户、本地优先；默认回环监听，需要时用 Bearer token 对外暴露。
 
 > **最后更新：2026-11-22**。本文按「现状 — 规划 — 路线图 — 风险」组织。
-> 代码与 [README](../README.md)、[API 文档](./api.md) 是事实来源；本文中的「规划」部分尚未实现。
+> 代码与 [README](../README.md)、[API 文档](./api.md) 是事实来源；除 §3.4 / §3.5（M12/M13，已实现）外，
+> 本文「规划」部分尚未实现。
 > 决策来源：用户确认「MTProto 与 Bot API 都要；单用户；暴露时加 token；前端 React + TS + Tailwind」。
 
 ## 0. 导读
@@ -23,13 +24,13 @@ Telegram 下载工具：Go 后端 + React/TypeScript 前端。单用户、本地
 | MTProto 账号 | ✅ | CLI 登录、tdata 探测导入、切换、详情、在线资料、头像、登出/删除 |
 | Bot API 账号 | 🚧 | 无客户端实现；`--botapi-base-url` 仅预留 |
 | 配置 | ✅ | `settings` 表 + `config` 命令 + Web 设置页 |
-| 链接解析 / 预览 | ✅ | `POST /links/preview`，支持正文、链接、媒体、相册 |
+| 链接解析 / 预览 | ✅ | `POST /links/preview`，支持正文、链接、媒体、相册；`GET /links/comments` 读取频道评论区；`download_comments` 可把评论媒体一并入队 |
 | 下载任务 | ✅ | 队列、`.part` 续传、暂停/继续/重试、SSE、缩略图 |
 | 会话界面 | 🚧 | 群/频道/私聊/收藏夹，仿 Telegram Desktop；M2 |
 | 群 / 频道监控 | 🚧 | 新消息过滤后自动下载；M7–M9 |
 | RSS 输出 | 🚧 | 每个监控生成 RSS 2.0 feed；M10–M11 |
-| 下载页草稿 | 🚧 | 输入 + 上次解析摘要存数据库；M12 |
-| 下载输入历史 | 🚧 | 最近 20 条解析批次；M13 |
+| 下载页草稿 | ✅ | 输入 + 上次解析摘要存数据库；M12 |
+| 下载输入历史 | ✅ | 最近 20 条解析批次；M13 |
 | QR / 转码 / MTProxy / Docker | ⏸ | 见 §3.6 |
 
 ### 0.3 文档结构
@@ -61,6 +62,7 @@ Telegram 下载工具：Go 后端 + React/TypeScript 前端。单用户、本地
 - 配置：`http_proxy`、`api_id` / `api_hash` / `api_custom_enabled`、`current_account_id`。
 - 链接解析与预览：正文、富文本实体、内嵌链接、媒体/相册元数据、缩略图。
 - 下载：链接/相册入队、覆盖策略、并发、续传、控制、SSE 进度、任务缩略图。
+- 下载页草稿与输入历史：输入/开关/上次解析摘要自动保存，最近 20 条解析批次可回填（M12/M13）。
 - Web：账号页、设置页、下载页；单二进制构建。
 
 **规划中**
@@ -68,7 +70,6 @@ Telegram 下载工具：Go 后端 + React/TypeScript 前端。单用户、本地
 - 会话界面（M2a–M2c）：群 / 频道 / 私聊 / 收藏夹，真实文件夹/归档，手动标记已读。
 - 群 / 频道监控（M7–M9）：新消息过滤后自动入队。
 - RSS 输出（M10–M11）：每个监控生成 RSS 2.0 + Media RSS feed。
-- 下载页草稿（M12）与输入历史（M13）。
 
 **暂不做**
 
@@ -168,6 +169,8 @@ tg_down_server/doc/
 | `accounts` | `id / kind / source / name / phone / username / session_path / state / last_error / tg_user_id / created_at / updated_at` | session 以文件保存，表里只存相对路径；`tg_user_id` 唯一 |
 | `settings` | `key / type / value / updated_at` | 配置项；`type` 为 `string / integer / boolean` |
 | `download_tasks` | `id / link / account_id / chat_id / chat_title / message_id / file_name / file_size / kind / mime / status / offset / speed / error / save_path / overwrite / thumbnail_url / preview_url / thumb_key / preview_key / created_at / updated_at` | `link` 唯一，重复入队复用任务 |
+| `ui_drafts` | `key / value / updated_at` | 界面输入草稿（当前仅 `downloads`），`value` 为 JSON |
+| `download_inputs` | `id / hash / links / line_count / first_line / cache_json / expand_text_links / overwrite / use_count / created_at / last_used_at` | 下载页历史输入 + 摘要缓存；`hash` 唯一，保留最近 20 条 |
 
 规则：
 
@@ -179,8 +182,6 @@ tg_down_server/doc/
 
 | 表 | 用途 | 章节 |
 |---|---|---|
-| `ui_drafts` | 界面输入草稿（当前仅 `downloads`） | §3.4 |
-| `download_inputs` | 下载页历史输入 + 摘要缓存 | §3.5 |
 | `peer_messages` | 监控消息归档，供 RSS 与调试 | §3.3 |
 | `rss_feeds` | feed token、mode、enclosure、limit | §3.3 |
 | `monitors` / `monitor_matches` | 监控配置、命中与跳过记录 | §3.2 |
@@ -197,7 +198,9 @@ tg_down_server/doc/
 
 #### 2.5.2 下载管理器
 
-- 全局 worker pool，默认并发 1（`--max-concurrency`，范围 1–8；MTProto 建议不超过 3）。
+- 全局 worker pool，默认并发 1：`--max-concurrency` 只作为首次写入 `settings.download_workers` 的初始值，
+  之后以配置为准（1–8，运行中修改对新任务生效；MTProto 建议不超过 3）。单文件线程数由
+  `settings.download_threads`（1–8，默认 4）控制。
 - 每个任务：
   1. 校验目标路径在下载根目录内（`filepath.Clean` + `filepath.IsLocal`）。
   2. 若 `.part` 存在则从 `offset` 续传。
@@ -207,6 +210,9 @@ tg_down_server/doc/
   - `FLOOD_WAIT_X` → 设计为 `paused` + `retry_at`，到点唤醒；**当前未实现**，任务会 `failed`，需手动重试。
   - 可重试错误（网络、超时、5xx）→ 设计为指数退避；**当前未实现**，失败后停在 `failed`。
   - 不可重试（文件过大、权限、路径非法）→ `failed`，错误原样返回前端。
+- 单文件上限：默认按当前账号 2GB / Premium 4GB 预检，超限媒体跳过或前端置灰；
+  请求显式 `allow_over_limit=true` 时跳过预检、强制创建任务并尝试下载，
+  Telegram 服务端仍可能拒绝，失败写入任务 `error`；标记随任务落库，执行前重新解析时仍生效。
 - 删除运行中任务会先取消 context；`.part` 总是清理，最终文件只在 `delete_file=true` 时删除。
 
 #### 2.5.3 进度推送
@@ -214,6 +220,12 @@ tg_down_server/doc/
 - SSE：`GET /api/v1/events`，服务端约 1.5 秒聚合一次运行中任务（id、offset、size、speed）。
 - 前端用 `fetch` 读流（`EventSource` 无法带 `Authorization` 头），断线指数退避重连，并按 `GET /downloads` 全量对齐。
 - 事件：`task.update`、`task.progress`、`task.deleted`、`ping`；慢客户端丢中间事件，不拖住下载。
+- 总览：`GET /api/v1/downloads/stats` 直接聚合内存里的 `downloadRun`，返回运行中任务的合计速度
+  （B/s）与数量；与任务列表的 `speed` 同源，不查数据库，供前端轮询展示总速度。
+- 历史速度：`GET /api/v1/downloads/stats/history` 从内存环形缓冲按桶返回最近 24 小时的曲线
+  （1s 采样，含区间均值/峰值）；不落库，服务重启清空。
+- 清空统计：`POST /api/v1/downloads/stats/reset` 只重置平均/峰值的统计起点，曲线样本保留；
+  响应 `stats_since` 给出新的起点。
 - 不引入 WebSocket：单向推送足够。
 
 #### 2.5.4 文件命名
@@ -242,7 +254,8 @@ tg_down_server/doc/
 
 ## 3. 规划
 
-> 以下功能均未实现。已确认的默认值写在各自「已确认」小节，接口细节见 [api.md](./api.md)。
+> 除 §3.4 / §3.5（M12/M13，已实现）外，以下功能均未实现。已确认的默认值写在各自「已确认」小节，
+> 接口细节见 [api.md](./api.md)。
 
 ### 3.1 会话界面（仿 Telegram Desktop，规划）
 
@@ -667,13 +680,20 @@ POST   /api/v1/feeds/{id}/rotate     → 200 {"url":"...","token":"<新 token>"}
 - 全文搜索、Web 阅读器、评论、已读状态同步。
 - 多 feed 聚合、按关键词生成子 feed、JSON Feed 可作为后续增强。
 
-### 3.4 下载页输入草稿（规划）
+### 3.4 下载页输入草稿（已实现，M12）
+
+> 落点：`internal/downloadinput`、`ui_drafts` 表、`GET/PUT /downloads/draft`；
+> 前端 `use-download-draft` hook 与下载页摘要卡。接口见 [api.md §1.8](./api.md#18-下载页草稿与历史)。
 
 #### 3.4.1 目标
 
-- 下载页的三个输入——链接文本、展开正文里的链接、覆盖同名文件——关闭/刷新页面或换浏览器后仍保留。
+- 下载页的链接文本关闭/刷新页面或换浏览器后仍保留。
+  两个开关——覆盖同名文件、展开正文里的链接——不属于草稿，它们是全局配置
+  （`download_overwrite` / `download_expand_text_links`，settings 表），下载页开关直接读写。
 - 存服务端数据库而不是 `localStorage`：同一实例换设备/浏览器也能恢复，并跟随数据目录一起备份。
-- 恢复**输入 + 上一次解析摘要**（只读展示）；不自动重新解析，预览 token 过期后由用户点「重新解析」。
+- 恢复**输入 + 上一次解析摘要**（只读展示）；打开页面时若恢复出非空草稿且
+  `download_auto_preview=true`，自动解析一次刷新摘要与封面（自动解析不写历史）；
+  手动「重新解析」仍然保留。
 
 #### 3.4.2 存储
 
@@ -682,12 +702,12 @@ POST   /api/v1/feeds/{id}/rotate     → 200 {"url":"...","token":"<新 token>"}
 | 字段 | 说明 |
 |---|---|
 | `key` | 主键；当前只允许 `downloads`，后续可扩展 |
-| `value` | JSON：`{"links":"…","expand_text_links":false,"overwrite":false,"cache":{…}}`；`cache` 可选 |
+| `value` | JSON：`{"links":"…","cache":{…}}`；`cache` 可选 |
 | `updated_at` | 最后保存时间 |
 
 - 用 JSON 而不是拆列：字段少且可能增加，服务端按结构体解析校验。
 - `cache` 与 §3.5.2 同构（summary / chats / items / failures），≤ 32 KiB；只用于展示，不参与下载。
-- 单行 upsert；保存空串也保留行（表示用户主动清空，开关状态仍保留）。
+- 单行 upsert；保存空串也保留行（表示用户主动清空）。
 - 上限：`links` ≤ 256 KiB、≤ 500 行；下载创建接口仍只接受 200 条链接。
 - 不写日志；草稿与下载链接同等敏感。
 
@@ -697,14 +717,12 @@ POST   /api/v1/feeds/{id}/rotate     → 200 {"url":"...","token":"<新 token>"}
 GET /api/v1/downloads/draft
 → 200 {
   "links": "",
-  "expand_text_links": false,
-  "overwrite": false,
   "cache": { … },                  // 可选，上次解析摘要
   "updated_at": 1763500000        // 从未保存时省略
 }
 
 PUT /api/v1/downloads/draft
-body: {"links":"…","expand_text_links":true,"overwrite":false,"cache":{…}}
+body: {"links":"…","cache":{…}}
 → 200 保存后的完整草稿
 → 400 links 超过 256 KiB / 500 行，或字段类型错误
 ```
@@ -718,11 +736,13 @@ body: {"links":"…","expand_text_links":true,"overwrite":false,"cache":{…}}
 
 - `use-download-draft` hook：挂载时 GET 一次并恢复输入与摘要；恢复完成前不触发自动保存。
   如果 GET 返回前用户已经开始输入，则放弃这次恢复，保留用户当前输入。
-- 自动保存：`links` 变化 debounce 800ms；两个 Switch 立即保存；输入区旁显示「保存中 / 已保存」。
+- 自动保存：`links` 变化 debounce 800ms；摘要变化立即保存；输入区旁显示「保存中 / 已保存」。
+- 两个开关改为读写系统配置 `download_overwrite` / `download_expand_text_links`
+  （`GET/PUT /settings`），与设置页同一项。
 - 关闭页面：`pagehide` 时用 `fetch(..., { keepalive: true })` 尽力补一次；失败静默。
   浏览器对 keepalive 请求体有上限，超大草稿以 debounce 已保存的版本为准。
 - 预览成功后顺带更新草稿的 `cache`（与历史记录同一次响应）；失败不影响解析。
-- 不自动重新解析；恢复后显示摘要卡（如「3 条消息 · 2 个视频 · 某频道」）与「重新解析」按钮；摘要缺失时只恢复输入。
+- 恢复完成后，若 `download_auto_preview=true`（默认）自动解析一次（刷新摘要/封面，不写历史、失败不弹 toast）；关闭时只恢复草稿与摘要。解析中显示摘要卡与「重新解析」按钮作为兜底，摘要缺失时只恢复输入。
 - 清空按钮：清空 links 和摘要并保存空串，同时清空预览结果。
 - 多标签页：last-write-wins，不做冲突合并。
 - 保存失败：保留本地输入，显示可重试提示；不阻塞解析与下载。
@@ -731,10 +751,15 @@ body: {"links":"…","expand_text_links":true,"overwrite":false,"cache":{…}}
 
 1. 草稿全局共享，不按账号区分。
 2. debounce 800ms。
-3. 恢复输入 + 上次解析摘要（只读），不自动重新解析。
-4. 清空后保留空草稿（空 links，保留两个开关状态）。
+3. 恢复输入 + 上次解析摘要（只读）；打开页面时自动解析一次，但不因此写历史。
+4. 清空后保留空草稿（空 links）。
+5. 三个开关/行为迁移到 settings：`download_overwrite`、`download_expand_text_links`、
+   `download_auto_preview`（默认 true），不再随草稿保存。
 
-### 3.5 下载输入历史（规划）
+### 3.5 下载输入历史（已实现，M13）
+
+> 落点：`internal/downloadinput`、`download_inputs` 表、`/downloads/history` 全套接口；
+> 前端历史面板（桌面 Popover、窄屏 Sheet）。接口见 [api.md §1.8](./api.md#18-下载页草稿与历史)。
 
 #### 3.5.1 目标
 
@@ -749,12 +774,12 @@ body: {"links":"…","expand_text_links":true,"overwrite":false,"cache":{…}}
 | 字段 | 说明 |
 |---|---|
 | `id` | 自增 |
-| `hash` | 唯一键：`links`（换行归一、首尾 trim）+ 两个开关的 SHA-256 |
+| `hash` | 唯一键：`links`（换行归一、首尾 trim）的 SHA-256；两个开关都不参与 |
 | `links` | 原始文本，回填用；上限 256 KiB / 500 行 |
 | `line_count` | 非空行数 |
 | `first_line` | 第一行，截断 160 字符 |
 | `cache_json` | 裁剪后的解析摘要（JSON，≤ 32 KiB） |
-| `expand_text_links` / `overwrite` | 当时的开关状态 |
+| `expand_text_links` / `overwrite` | 解析时的展开开关与全局覆盖开关值；覆盖开关仅作记录，回填不应用 |
 | `use_count` | 被记录/重复使用的次数 |
 | `created_at` / `last_used_at` | 首次与最近一次 |
 
@@ -775,13 +800,16 @@ body: {"links":"…","expand_text_links":true,"overwrite":false,"cache":{…}}
 - 不缓存缩略图/预览 URL、entities、`file_id`、`access_hash`。
 - 保留最近 20 条；重复内容更新 `last_used_at` / `use_count` / `cache_json`，不新增行。
 - 与 `ui_drafts` 分开：草稿会被覆盖，历史要保留多份。
+- 卡片标题（`title`）是派生字段：从 `cache_json` 第一条消息取正文，纯媒体用 `[图片]` 等占位，
+  不额外落库；没有缓存时前端退回 `first_line`。
 
 #### 3.5.3 记录时机
 
 - 用户点击「解析预览」并成功返回后，前端把当前输入与**裁剪后的 `cache`** 一起 `POST /downloads/history`；失败静默。
 - `cache` 直接来自预览响应，不需要二次请求；服务端按白名单裁剪、截断后落库。
 - 只在预览成功后记录；不记录「全部下载」等二次操作。
-- 服务端按 `hash` 去重；相同内容再次预览时更新 `last_used_at`、`use_count` 与 `cache_json`。
+- 服务端按 `hash` 去重；相同内容再次预览时更新 `last_used_at`、`use_count`、`cache_json` 与两个开关快照。
+  两个开关都是全局配置，不参与去重：同一批链接只切换开关时仍是一条历史。
 
 #### 3.5.4 API
 
@@ -822,9 +850,9 @@ DELETE /api/v1/downloads/history        → 200 {"ok":true,"removed":12}
 #### 3.5.5 前端
 
 - 输入区标题旁「历史（N）」按钮；桌面 Popover，窄屏 Sheet。
-- 列表行：第一行、`共 N 条`、缓存摘要（`3 条消息 · 2 个视频 · 某频道`）、开关徽章、相对时间、使用次数；点击回填，行尾删除。
+- 列表行：封面（缩略图磁盘缓存）、消息摘要标题（`[图片]` 或正文，见 §3.5.2）、`共 N 条`、缓存摘要（`3 条消息 · 2 个视频 · 某频道`）、开关徽章、相对时间、使用次数；点击回填并解析，行尾删除。
 - 详情可显示缓存的消息条目与失败原因（只读，最多 20 条），并提供「重新解析」。
-- 回填只更新输入框与两个开关（触发草稿自动保存），不自动解析；面板关闭并提示「已填入，点击解析预览」。
+- 回填 links 后立即解析一次并关闭面板；两个开关都是全局配置，不随历史回填。解析成功照常更新使用次数与摘要缓存，失败时输入仍保留。
 - 缓存只用于展示，不直接用缓存数据创建下载。
 - 缓存缺失或损坏时退回「共 N 条 + 时间」，不影响回填。
 - 「清空历史」二次确认；空状态说明「解析预览后会出现在这里」。
@@ -843,7 +871,7 @@ DELETE /api/v1/downloads/history        → 200 {"ok":true,"removed":12}
 2. 列表默认 20 条，最多保留 20 条。
 3. 不做固定/收藏，只按最近使用排序。
 4. 历史记录缓存一份裁剪后的解析摘要，用于列表与详情展示；回填仍只恢复输入，缓存不直接用于创建下载。
-5. 点击历史只回填，不自动解析。
+5. 点击历史回填并自动解析；两个开关不随回填变化，缓存仍只用于展示。
 
 ### 3.6 暂不做（已确认）
 
@@ -858,34 +886,49 @@ DELETE /api/v1/downloads/history        → 200 {"ok":true,"removed":12}
 
 ### 4.1 里程碑总表
 
-| 阶段 | 内容 | 预估 | 状态 |
-|---|---|---|---|
-| M0 | 脚手架、路由与中间件、SQLite 建表、Vite 代理、`go:embed` | 0.5–1 天 | ✅ |
-| M1 | MTProto 登录、session 持久化（Bot API 未做） | 2 天 | ✅（部分） |
-| M2a | 会话/消息读取接口：dialogs、folders、chat info、messages、pinned、mark-read、`downloads/from-messages` | 3 天 | 🚧 |
-| M2b | 会话列表 + 消息流 UI（仿 Telegram Desktop、文件夹/归档、收藏夹、私聊、标记已读） | 5–6 天 | 🚧 |
-| M2c | 媒体/相册、多选批量下载、信息面板、移动端与可访问性 | 3 天 | 🚧 |
-| M3 | 单文件下载 + `.part` 续传 + SSE | 2 天 | ✅ |
-| M4 | 队列、并发限流、FloodWait 恢复、失败重试 | 1–2 天 | ✅（FloodWait 未做） |
-| M5 | 任务页 / 设置页 / 批量下载 / 错误提示 | 2 天 | ✅ |
-| M6 | 单二进制、Windows 路径与权限、README | 1 天 | ✅ |
-| M7 | 监控核心：模型、CRUD、peer 解析、`serve` 生命周期、连接池、直接入队、去重 | 3 天 | 🚧 |
-| M8 | 监控过滤与补扫：sender/pinned/media/text/forward、pin 触发、backfill、干跑 | 2–3 天 | 🚧 |
-| M9 | 监控稳定性与 UI：gap 恢复、限流退避、`/monitors` 页与 SSE | 2–3 天 | 🚧 |
-| M10 | RSS 基础：`peer_messages`、`rss_feeds`、RSS 2.0、ETag/304 | 2 天 | 🚧 |
-| M11 | RSS 媒体与打磨：media/thumb、Media RSS、enclosure 开关、前端复制/轮换 | 1–2 天 | 🚧 |
-| M12 | 下载草稿：`ui_drafts`、GET/PUT、摘要缓存、自动保存 | 1 天 | 🚧 |
-| M13 | 下载历史：`download_inputs`、去重/清理、历史面板 | 1–1.5 天 | 🚧 |
+按建议执行顺序排列；「顺序」是排期用的，阶段 ID 保持不变（文档与前端里程碑表引用的是 ID）。
+
+| 顺序 | 阶段 | 内容 | 预估 | 状态 |
+|---|---|---|---|---|
+| 1 | M0 | 脚手架、路由与中间件、SQLite 建表、Vite 代理、`go:embed` | 0.5–1 天 | ✅ |
+| 2 | M1 | MTProto 登录、session 持久化（Bot API 未做） | 2 天 | ✅（部分） |
+| 3 | M3 | 单文件下载 + `.part` 续传 + SSE | 2 天 | ✅ |
+| 4 | M4 | 队列、并发限流、失败重试（FloodWait 自动恢复未做） | 1–2 天 | ✅（部分） |
+| 5 | M5 | 任务页 / 设置页 / 批量下载 / 错误提示 | 2 天 | ✅ |
+| 6 | M6 | 单二进制、Windows 路径与权限、README | 1 天 | ✅ |
+| 7 | **M2a** | **会话/消息读取接口**：dialogs、folders、chat info、messages、pinned、mark-read、`downloads/from-messages` | 3 天 | 🚧 **下一步** |
+| 8 | M2b | 会话列表 + 消息流 UI（仿 Telegram Desktop、文件夹/归档、收藏夹、私聊、标记已读） | 5–6 天 | 🚧 |
+| 9 | M2c | 媒体/相册、多选批量下载、信息面板、移动端与可访问性 | 3 天 | 🚧 |
+| 10 | M12 | 下载草稿：`ui_drafts`、GET/PUT、摘要缓存、自动保存 | 1 天 | ✅ |
+| 11 | M13 | 下载历史：`download_inputs`、去重/清理、历史面板 | 1–1.5 天 | ✅ |
+| 12 | M4+ | 补 FloodWait 自动挂起/恢复（复用 M4 的队列） | 1 天 | 🚧 |
+| 13 | M7 | 监控核心：模型、CRUD、peer 解析、`serve` 生命周期、连接池、直接入队、去重 | 3 天 | 🚧 |
+| 14 | M8 | 监控过滤与补扫：sender/pinned/media/text/forward、pin 触发、backfill、干跑 | 2–3 天 | 🚧 |
+| 15 | M9 | 监控稳定性与 UI：gap 恢复、限流退避、`/monitors` 页与 SSE | 2–3 天 | 🚧 |
+| 16 | M10 | RSS 基础：`peer_messages`、`rss_feeds`、RSS 2.0、ETag/304 | 2 天 | 🚧 |
+| 17 | M11 | RSS 媒体与打磨：media/thumb、Media RSS、enclosure 开关、前端复制/轮换 | 1–2 天 | 🚧 |
+| 18 | M1+ | Bot API 接入（需自建 bot-api-server 才能突破 20MB） | 2–3 天 | 🚧（最后/按需） |
 
 - 含会话界面的 MVP（M0–M6）约 **15–18 个工作日**。
-- 监控（M7–M9）约 **7–9 天**；RSS（M10–M11）约 **3–4 天**；草稿 + 历史约 **2–2.5 天**。
+- 监控（M7–M9）约 **7–9 天**；RSS（M10–M11）约 **3–4 天**；草稿 + 历史（已完成）约 **2–2.5 天**。
+
+**排序理由**：
+
+1. **先补会话浏览（M2a→M2b→M2c）**：这是当前最大的能力缺口，也是后端唯一会阻塞两条前端主线（会话页、监控选群）的基础接口；M2a 不落地，后面都只能空转。
+2. **已完成：便宜且独立的改进（M12/M13）**：草稿与历史不依赖会话接口，前后端各 1 天左右，
+   能立刻改善下载页日常使用；原本建议放在 M2b/M2c 之间并行，现已先落地。
+3. **补 FloodWait 恢复（M4+）**：批量下载与后续监控都会遇到限流，放在监控之前做，避免监控上线后放大失败率。
+4. **然后做监控链（M7→M8→M9）**：M7 的连接池改造会顺带改善现有下载/预览的并发；M8/M9 必须建立在 M7 的连接与归档之上。
+5. **RSS 放在监控之后（M10→M11）**：feed 依赖 M7 的消息归档与 M9 的稳定 supervisor，提前做会返工。
+6. **Bot API 最后或按需（M1+）**：默认 MTProto 已覆盖主要场景，Bot API 还受 20MB 限制，收益最低。
 
 ### 4.2 依赖与顺序
 
-- M2a 依赖现有下载与链接解析；M2b/M2c 依赖 M2a。
+- **主顺序**：M0–M6（已完成）→ M12/M13（已完成，可与 M4+ 并行）→ M2a → M2b → M2c →（可并行 M4+）→ M7 → M8 → M9 → M10 → M11 → M1+。
+- M2a 依赖现有下载与链接解析；M2b/M2c 依赖 M2a，不能并行开工。
+- M12/M13 与 M2/M7 没有强依赖，可在任意阶段插入；M4+ 复用 M4 的队列与限流逻辑。
 - M7 的连接池改造会顺带改善现有下载/预览的 session 并发问题；M8/M9 依赖 M7。
 - RSS 依赖 M7 的消息归档；建议 M9 的 supervisor 稳定后再对外暴露 feed。
-- 草稿与历史相互独立，可与 M2/M7 并行。
 - M0–M2 可基于 `omni_toolbox` 骨架改造，复用清单见 [reference.md](./reference.md)，预计省 2–3 天。
 
 ## 5. 风险与对策

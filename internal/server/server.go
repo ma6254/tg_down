@@ -76,6 +76,11 @@ type Config struct {
 	// 可归因的失败；为 nil 时接口返回 501。
 	PreviewLinks func(ctx context.Context, req PreviewRequest) (PreviewResponse, error)
 
+	// GetComments 读取频道帖子的评论区（只读，不落库）。
+	// 业务层用 ErrNoCurrentAccount / ErrAccountNoSession / ErrCommentsBadRequest /
+	// ErrCommentsFailed 表示可归因的失败；为 nil 时接口返回 501。
+	GetComments func(ctx context.Context, query CommentsQuery) (CommentsResponse, error)
+
 	// GetSettings 返回全部配置项（领域记录，DTO 映射在 server 内完成）；
 	// 为 nil 时接口返回 501。
 	GetSettings func(ctx context.Context) ([]config.Entry, error)
@@ -90,6 +95,18 @@ type Config struct {
 	// ListDownloads 返回任务列表，运行中的任务带实时进度；为 nil 时接口返回 501。
 	ListDownloads func(ctx context.Context, query DownloadListQuery) ([]DownloadTask, error)
 
+	// GetDownloadStats 返回下载队列总览（运行中任务的合计速度与数量）；
+	// 只读内存进度，不查数据库；为 nil 时接口返回 501。
+	GetDownloadStats func(ctx context.Context) DownloadStats
+
+	// GetDownloadSpeedHistory 返回一段历史速度曲线（内存采样聚合）；
+	// 为 nil 时接口返回 501。
+	GetDownloadSpeedHistory func(ctx context.Context, query DownloadSpeedHistoryQuery) (DownloadSpeedHistory, error)
+
+	// ResetDownloadSpeedStats 清空平均/峰值统计的起点（保留速度曲线样本）；
+	// 为 nil 时接口返回 501。
+	ResetDownloadSpeedStats func(ctx context.Context) time.Time
+
 	// GetDownload 返回单个任务详情；为 nil 时接口返回 501。
 	GetDownload func(ctx context.Context, id uint) (DownloadTask, error)
 
@@ -102,6 +119,38 @@ type Config struct {
 
 	// GetDownloadThumbnail 返回任务卡片用的缩略图；为 nil 时接口返回 501。
 	GetDownloadThumbnail func(ctx context.Context, id uint) (MediaThumbnail, error)
+
+	// GetDownloadFile 打开一个已完成任务的文件，供浏览器按 Range 流式读取；
+	// 业务层用 ErrDownloadNotFound / ErrDownloadConflict / ErrDownloadFileNotFound
+	// 表示可归因的失败；为 nil 时接口返回 501。
+	GetDownloadFile func(ctx context.Context, id uint) (DownloadFile, error)
+
+	// GetDownloadDraft 返回下载页输入草稿；没有草稿时返回默认值（200）。
+	// 为 nil 时接口返回 501。
+	GetDownloadDraft func(ctx context.Context) (DownloadDraft, error)
+
+	// SaveDownloadDraft 全量保存下载页输入草稿；为 nil 时接口返回 501。
+	SaveDownloadDraft func(ctx context.Context, input DownloadDraftInput) (DownloadDraft, error)
+
+	// ListDownloadHistory 返回最近使用的历史输入；为 nil 时接口返回 501。
+	ListDownloadHistory func(ctx context.Context, limit int) (DownloadHistoryList, error)
+
+	// GetDownloadHistory 返回单条历史详情；为 nil 时接口返回 501。
+	GetDownloadHistory func(ctx context.Context, id uint) (DownloadHistoryDetail, error)
+
+	// RecordDownloadHistory 记录一次成功解析（按内容去重）；
+	// created 表示这次是否新建记录；为 nil 时接口返回 501。
+	RecordDownloadHistory func(ctx context.Context, input DownloadHistoryInput) (DownloadHistoryDetail, bool, error)
+
+	// DeleteDownloadHistory 删除单条历史记录；为 nil 时接口返回 501。
+	DeleteDownloadHistory func(ctx context.Context, id uint) error
+
+	// ClearDownloadHistory 清空历史记录并返回删除条数；为 nil 时接口返回 501。
+	ClearDownloadHistory func(ctx context.Context) (int, error)
+
+	// GetDownloadHistoryCover 返回一条历史的封面缩略图（JPEG 字节，走 thumbnail/
+	// 磁盘缓存）；为 nil 时接口返回 501。
+	GetDownloadHistoryCover func(ctx context.Context, id uint) (MediaThumbnail, error)
 
 	// EventHub 是 SSE 广播器实例，由 cmd 层创建并交给下载管理器发布事件。
 	// 为 nil 时 /api/v1/events 返回 501。

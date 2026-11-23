@@ -31,9 +31,38 @@ func Key(thumb mtproto.Thumb) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ValidKey 判断缓存键是否是 Key 生成的 64 位十六进制串。
+//
+// 键会直接参与文件路径拼接，必须先校验，避免调用方（例如历史缓存里的
+// 前端回传字段）用 "../" 之类的内容逃出缓存目录。
+func ValidKey(key string) bool {
+	if len(key) != sha256.Size*2 {
+		return false
+	}
+	for _, r := range key {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
+}
+
+// Cached 判断某个键的缩略图是否已落盘（只看文件是否非空）。
+func Cached(key string) bool {
+	if !ValidKey(key) {
+		return false
+	}
+	path, err := Path(key)
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.Size() > 0
+}
+
 // Path 返回某个键对应的文件路径（两级分片，避免单目录文件过多）。
 func Path(key string) (string, error) {
-	if len(key) < 2 {
+	if !ValidKey(key) {
 		return "", fmt.Errorf("缩略图缓存键 %q 不合法", key)
 	}
 	dir, err := Dir()

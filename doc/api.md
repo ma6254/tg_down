@@ -13,15 +13,15 @@
 |---|---|---|
 | 通用 | `GET /health`、`GET /system` | ✅ |
 | 账号 | 探测、列表、切换、登出、删除、详情、在线资料、头像 | ✅ |
-| 链接 | `POST /links/preview`、`GET /media/thumbnail/{token}` | ✅ |
-| 下载 | 创建、列表/详情、暂停/继续/重试、删除、任务缩略图 | ✅ |
+| 链接 | `POST /links/preview`、`GET /links/comments`、`GET /media/thumbnail/{token}` | ✅ |
+| 下载 | 创建、列表/详情、合计速度、历史速度、清空统计、暂停/继续/重试、删除、任务缩略图 | ✅ |
 | 事件 | `GET /events`（SSE） | ✅ |
 | 设置 | `GET/PUT /settings` | ✅ |
 | 账号登录扩展 | Bot Token、MTProto 三步登录 | 🚧 §2.1 |
 | 会话 | 列表、文件夹、信息、已读、消息、置顶、按消息下载 | 🚧 §2.2 |
 | 监控 | CRUD、干跑、命中记录、peer 解析、`monitor.*` SSE | 🚧 §2.3 |
 | RSS | feed 管理、`/rss/*` 公开端点 | 🚧 §2.4 |
-| 下载页 | 输入草稿、输入历史 | 🚧 §2.5 |
+| 下载页 | 输入草稿、输入历史 | ✅ §1.8 |
 
 ### 0.2 通用约定
 
@@ -289,6 +289,10 @@ body: {
   "items": [{
     "link": "https://t.me/JPD233/2522",
     "message_id": 2522,
+    "comment_section": {            // 仅频道帖子开启评论时出现
+      "available": true,            // 评论区是否存在（0 条评论时也可能为 true）
+      "count": 1                    // 评论总数
+    },
     "chat": {
       "kind": "channel",            // user | group | channel
       "id": 3713824040,
@@ -318,7 +322,8 @@ body: {
       "grouped_id": 0,              // 相册分组，非相册省略
       "downloadable": true,         // 是否超过当前账号的单文件上限
       "max_size": 2147483648,       // 普通 2 GB / Premium 4 GB
-      "thumbnail_url": "/api/v1/media/thumbnail/<token>"  // 列表封面，没有缩略图时省略
+      "thumbnail_url": "/api/v1/media/thumbnail/<token>",  // 列表封面，没有缩略图时省略
+      "thumb_key": "9f86d081…"      // 缩略图磁盘缓存键；历史封面长期引用，没有缩略图时省略
     },
     "medias": [{                    // 相册：全部媒体（按消息 ID 升序）；非相册省略
       {"kind": "photo", "file_name": "photo_1.jpg", "size": 78935,
@@ -343,11 +348,61 @@ body: {
 
 - 单条链接失败只写在该条的 `error` 字段，整体仍返回 200；`links` 为空或超过 200 条返回 400。
 - 纯文本消息没有 `media`，正文与链接照常返回。
+- `comment_section` 只在广播频道帖子开启评论时出现；`available` 表示评论区是否存在，
+  `count` 是评论数。点开评论时用 `GET /links/comments` 获取最新内容，不要用 preview 结果代替评论列表。
+- `thumb_key` 是缩略图在 `<数据目录>/thumbnail/` 下的缓存键（64 位十六进制），与 30 分钟过期的
+  `thumbnail_url` token 不同：换 token 或进程重启后仍指向同一张图，下载页历史用它取封面。
 - 相册消息会额外返回 `medias`：每条媒体带自己的 `message_id` 与 `link`，前端按列表逐条展示和入队；`media` 仍保留为链接指向的那一条。`POST /downloads` 传相册链接时，服务端会为每条媒体各建一个任务。
 - `expand_text_links=true` 时，展开出的条目带 `expanded: true`，并计入 `summary.expanded`；展开上限 200 条（超过时 `summary.truncated=true`），正文里不是消息链接的条数计入 `summary.skipped_links`。
 - 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；502 `preview_failed`（连接或 Telegram 报错）；504 `preview_timeout`。
 
-#### 1.4.2 媒体缩略图
+#### 1.4.2 评论区
+
+```
+GET /api/v1/links/comments?link=<帖子链接>&limit=20&offset_id=0
+→ 200 {
+  "link": "https://t.me/ahegobymt/21074",
+  "message_id": 21074,
+  "thread_id": 10367,           // 讨论组里的线程起始消息；没有评论区时省略
+  "available": true,            // 帖子是否开启了评论区
+  "reason": "",                 // available=false 时的原因
+  "chat": {                     // 评论区所在的关联讨论组
+    "kind": "channel", "id": 4370527970, "title": "…"
+  },
+  "post_chat": {                // 原帖所在频道
+    "kind": "channel", "id": 2623413804, "title": "…", "username": "ahegobymt", "broadcast": true
+  },
+  "total": 1,
+  "comments": [{
+    "id": 10371,
+    "date": 1795275090,         // Unix 秒
+    "sender": {                 // 匿名评论可能省略
+      "id": 355927778, "name": "…", "username": "…", "avatar_url": "…"
+    },
+    "text": "",
+    "entities": [],             // 与正文相同的富文本标注
+    "links": [],
+    "media": {                  // 评论媒体，字段同预览的 media
+      "kind": "video", "file_name": "…mp4", "size": 73117256, "downloadable": true
+    },
+    "media_error": "",          // 媒体解析失败时的原因
+    "reply_to": {"message_id": 10367, "quote": "…"}  // 可选
+  }],
+  "next_offset_id": 0           // 加载更早评论时传给 offset_id；0 表示没有更多
+}
+```
+
+说明：
+
+- 只支持**广播频道帖子**；普通群/私聊返回 200，`available=false` 并带 `reason`。
+- 帖子没有开启评论时返回 200，`available=false`、`comments=[]`。
+- 评论区在频道的关联讨论组里；相册帖在讨论组里有多条副本，服务端取 ID 最小的那条作为线程起点。
+- 评论里的媒体链接指向评论消息本身（`t.me/<群>/<评论ID>` 或 `t.me/c/<群>/<评论ID>`），可复用下载接口。
+- `limit` 默认 20、最大 50；`offset_id` 取上一页的 `next_offset_id`。评论按时间倒序（最新在前）。
+- 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；
+  502 `comments_failed`（连接或 Telegram 报错）；504 `comments_timeout`。
+
+#### 1.4.3 媒体缩略图
 
 ```
 GET /api/v1/media/thumbnail/{token}
@@ -372,25 +427,38 @@ POST /api/v1/downloads
 body: {
   "links":["https://t.me/JPD233/2522","https://t.me/JPD233/2522?comment=12454"],
   "overwrite": false,           // 可选；true 时覆盖同名文件并从零下载
-  "single": false               // 可选；true 时只下载链接指向的那条消息，不展开相册
+  "single": false,              // 可选；true 时只下载链接指向的那条消息，不展开相册
+  "allow_over_limit": false     // 可选；true 时跳过本地单文件上限预检，强制创建任务
 }
 → 201 {
-  "created":  [42],                       // 新建并入队的任务
-  "existing": [41],                       // 之前已存在（同一链接），不重复下载
-  "skipped":  [{"link":"…","reason":"该消息没有可下载的媒体"}],
-  "failed":   [{"link":"…","error":"链接无法解析"}]
+  "created":   [42],                      // 新建并入队的任务
+  "restarted": [41],                      // 覆盖模式下重置并重新入队的已有任务
+  "existing":  [40],                      // 之前已存在（同一链接），不重复下载
+  "skipped":   [{"link":"…","reason":"该消息没有可下载的媒体"}],
+  "failed":    [{"link":"…","error":"链接无法解析"}]
 }
 ```
 
 - 链接唯一：同一个链接重复创建返回 `existing`，不会重复下载。
+- 实际是否覆盖 = 请求体 `overwrite=true` **或** 系统配置 `download_overwrite=true`（全局开关）。
+  未配置时默认关闭；请求里的字段只做一次性覆盖，不改变全局设置。
+- 覆盖生效且已有任务处于 `done` / `failed` / `paused` 时，会把该任务重置为
+  `pending`（`offset=0`、清空错误与 `save_path`）后重新入队，并进 `restarted`；
+  `running` / `pending` 的任务不打断，仍返回 `existing`（排队中的任务会顺带把开关更新为 true）。
 - `single=true`：只下载链接直接指向的那条消息，不把相册展开成整组；
   默认 `false` 与 CLI 一致，相册链接会展开成整组任务。网页媒体列表里的
   单行「下载」按钮传 `true`，「全部下载」传 `false`。
-- `overwrite=true`：目标位置已有同名文件时直接替换（不再生成「名称 (1).ext」），
-  并丢弃已有 `.part` 从零下载；默认 `false` 时同名文件加序号，同名同大小视为已完成。
+- `download_comments=true` 时，普通频道帖子（`single=false` 且不是 `?comment=` 链接）
+  会额外读取评论区媒体并入队；单帖最多读取 10 页评论、创建 100 个评论媒体任务，
+  超出的部分写入 `skipped`。评论任务的链接指向讨论组里的评论消息本身。
+- `overwrite`：目标位置已有同名文件时直接替换（不再生成「名称 (1).ext」），
+  并丢弃已有 `.part` 从零下载；关闭时同名文件加序号，同名同大小视为已完成。
   该标记随任务落库，任务详情里的 `overwrite` 字段可用于核对。
-- 没有媒体或超过账号单文件上限的链接进 `skipped`；解析/查询失败的进 `failed`，
-  整体仍返回 201。
+- `allow_over_limit=true` 时跳过本地的 2GB/4GB 单文件上限预检，仍会创建任务并尝试下载；
+  Telegram 服务端仍可能拒绝，失败会写进任务 `error`。该标记随任务落库，
+  执行前重新解析时仍生效。默认 `false`。
+- 没有媒体或超过账号单文件上限的链接进 `skipped`（`allow_over_limit=true` 时不再跳过）；
+  解析/查询失败的进 `failed`，整体仍返回 201。
 - 一次最多 200 条链接。
 - 私聊 / 收藏夹等没有 `t.me` 链接的消息，用 `POST /downloads/from-messages`（规划中，见 §2.2）。
 - 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；
@@ -463,7 +531,87 @@ GET /api/v1/downloads/{id}/thumbnail
   `DROP COLUMN` 删除该列（数据只删这一列，任务行保留）。SQLite 不会自动缩小文件，
   需要回收磁盘空间可手动执行一次 `VACUUM`。
 
-#### 1.5.5 尚未实现
+#### 1.5.5 已下载文件
+
+```
+GET  /api/v1/downloads/{id}/file
+HEAD /api/v1/downloads/{id}/file
+Range: bytes=0-1048575     # 可选；视频/音频拖动进度条
+→ 200 / 206 <文件字节>
+```
+
+- 只对 `status=done` 且 `save_path` 存在的任务开放：任务未完成返回 409，
+  任务不存在或文件已删除返回 404。
+- `Content-Type` 取任务的 `mime`（缺失时按文件名后缀推断）；图片、音视频与 PDF 使用
+  `Content-Disposition: inline`，其余为 `attachment`。
+- 支持 `Range`、`If-Modified-Since` 与 `HEAD`，响应带 `Accept-Ranges: bytes`；
+  浏览器可直接把它当作 `<video>` / `<img>` 地址或在新标签页打开。
+- 文件路径取自任务的 `save_path`，服务端会解析符号链接并校验真实路径位于下载根目录内；
+  不接受客户端传路径。
+- 与其它 `/api/*` 一样，token 模式下需要在请求头带 Bearer；默认本地免鉴权模式可直接打开。
+
+#### 1.5.6 合计速度
+
+```
+GET /api/v1/downloads/stats
+→ 200 {
+  "total_speed": 3145728,   // 所有运行中任务的合计速度，B/s
+  "running_tasks": 2        // 当前运行中的任务数
+}
+```
+
+- 只聚合内存里正在执行的任务，不读数据库；没有运行中的任务时返回 `0/0`，不返回 404。
+- `total_speed` 与任务列表里 running 任务的 `speed` 同源（按 1 MiB 分块采样，通常 0.5–2s
+  更新一次）；卡住的任务会保留最近一次采样值，和单任务行显示一致。
+- 适合前端每秒轮询一次，用于标题栏或状态灯；响应带 `Cache-Control: no-store`。
+- 未接入下载功能时返回 501；token 模式下与其他 `/api/*` 一样需要 Bearer。
+
+#### 1.5.7 历史速度
+
+```
+GET /api/v1/downloads/stats/history?from=1763800000&to=1763801800&bucket=10
+→ 200 {
+  "from": 1763800000,
+  "to": 1763801800,
+  "bucket": 10,
+  "sample_interval": 1,
+  "stats_since": 1763800000,  // 平均/峰值统计起点（上次清空时间或窗口起点）
+  "average_speed": 1572864,   // 区间内全部原始样本的平均值（含空闲 0 值）
+  "peak_speed": 4194304,      // 单个原始样本的峰值
+  "points": [
+    {"at": 1763800000, "total_speed": 1048576, "running_tasks": 2},
+    {"at": 1763800010, "total_speed": 2097152, "running_tasks": 3}
+  ]
+}
+```
+
+- 数据来自进程内存：每 1 秒采样一次 `{合计速度, 运行任务数}`，保留最近 24 小时；
+  服务重启后清空。
+- `from` / `to` 为 Unix 秒，默认最近 30 分钟；只给 `to` 时取它之前的 30 分钟；
+  `to` 晚于当前时间会收敛到当前时刻；`from` 早于最旧样本时从最旧样本开始。
+- `bucket` 为聚合粒度（秒，1–3600），省略时自动选择，保证点数不超过 300；
+  显式 `bucket` 最多返回 1000 个点。
+- `total_speed` 是桶内平均速度（B/s），`running_tasks` 是桶内最大值。
+- `average_speed` / `peak_speed` 只统计 `stats_since` 之后的样本；可以调用
+  §1.5.8 清空统计，曲线点本身不受影响。
+- 没有样本时 `points` 是空数组，`average_speed` / `peak_speed` 为 0。
+- 错误：400（时间戳、bucket、范围或点数非法）；501（服务端未接入下载功能）。
+
+#### 1.5.8 清空平均/峰值统计
+
+```
+POST /api/v1/downloads/stats/reset
+→ 200 {"ok": true, "reset_at": 1795359000}
+```
+
+- 只重置 `average_speed` / `peak_speed` 的统计起点，**速度曲线样本保留**；
+  之后的统计从 `reset_at` 之后的新样本重新累计。
+- 清空后立即查询历史：`stats_since` 等于 `reset_at`；如果区间内还没有新样本，
+  `average_speed` 和 `peak_speed` 都是 0。
+- 典型用法：前端「清空统计」按钮，清空后重新拉一次历史接口刷新卡片。
+- 未接入下载功能时返回 501。
+
+#### 1.5.9 尚未实现
 
 - 下载完成后的大小校验与 CDN 分块哈希校验。
 - `FLOOD_WAIT` 自动挂起与定时恢复（当前只把限流原因写进任务 `error`）。
@@ -510,7 +658,8 @@ GET /api/v1/settings
   "settings": [
     {"key":"current_account_id","type":"integer","value":"1","description":"当前选中的账号 ID（由 account switch 维护）","known":true,"read_only":true},
     {"key":"http_proxy","type":"string","value":"http://user:***@127.0.0.1:7897","description":"出站代理…","known":true},
-    {"key":"http_proxy_enabled","type":"boolean","default":"true","value":"true","description":"是否启用 http_proxy…","known":true}
+    {"key":"http_proxy_enabled","type":"boolean","default":"true","value":"true","description":"是否启用 http_proxy…","known":true},
+    {"key":"web_theme","type":"string","default":"system","value":"system","description":"网页主题：light（浅色）/ dark（深色）/ system（跟随系统）","known":true}
   ]
 }
 
@@ -521,10 +670,44 @@ body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
 
 - `type` 是值的逻辑类型（`string` / `integer` / `boolean`），由后端 `config.items` 定义；
   `value` 仍以字符串存储，前端可据此选择输入控件。
-- `default` 是未配置时使用的默认值；目前 `http_proxy_enabled` 默认 `"true"`，`api_custom_enabled` 默认 `"false"`。
+- `default` 是未配置时使用的默认值；目前 `http_proxy_enabled`、`download_auto_preview`
+  默认 `"true"`，`download_workers` 默认 `"1"`、`download_threads` 默认 `"4"`，
+  `web_theme` 默认 `"system"`，`api_custom_enabled`、`download_overwrite`、
+  `download_expand_text_links`、`download_comments` 与 `web_title_speed` 默认 `"false"`。
 - 服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
-  （当前是 `http_proxy_enabled=true` 与 `api_custom_enabled=false`）；空默认值表示未配置，不会落库。
+  （当前是 `http_proxy_enabled=true`、`api_custom_enabled=false`、
+  `download_overwrite=false`、`download_expand_text_links=false`、
+  `download_auto_preview=true`、`download_comments=false`、`download_workers=1`、
+  `download_threads=4`、`web_theme=system` 与 `web_title_speed=false`）；
+  空默认值表示未配置，不会落库。老库启动时也会补写缺失的下载设置与网页设置
+  （两个开关沿用旧草稿值或 `false`，自动解析写 `true`，
+  并行文件数沿用 `--max-concurrency`，线程数写 `4`，网页主题写 `system`，
+  网页标题速度写 `false`）。
 - 只允许写 `config.items` 里登记的键；`current_account_id` 只读，由账号接口维护。
+- **下载覆盖**：`download_overwrite` 是布尔值，默认 `false`；为 `true` 时下载直接替换同名文件
+  并丢弃已有 `.part` 从零下载。下载页的「覆盖同名文件」开关直接读写这一项，设置页也可见；
+  创建下载时请求体的 `overwrite=true` 仍可作为一次性覆盖（两者取或）。
+- **展开正文链接**：`download_expand_text_links` 是布尔值，默认 `false`；为 `true` 时
+  「解析预览」会展开消息正文里的文字链接（只展开一层）。下载页的「展开正文里的链接」开关
+  直接读写这一项，设置页也可见。
+- **下载页自动解析**：`download_auto_preview` 是布尔值，默认 `true`；打开下载页且草稿非空时
+  自动解析一次（不写历史）。关闭后打开页面只恢复草稿与摘要，需要手动点「解析预览」。
+- **下载评论区**：`download_comments` 是布尔值，默认 `false`；为 `true` 时通过下载页创建
+  普通频道帖子任务会同时读取评论区媒体并入队（单帖最多 10 页评论、100 个评论媒体）。
+  `single=true` 的单条媒体下载和 `?comment=` 评论链接不会展开评论区；设置页的
+  「下载评论区」开关直接读写这一项。
+- **并行文件数**：`download_workers` 是 1-8 的整数，默认 `1`；同时执行的任务数。
+  服务运行中修改后，新开始的任务按新值限制并发（正在运行的任务不打断）。
+  首次补写该键时沿用启动参数 `--max-concurrency` 的值。
+- **并行线程数**：`download_threads` 是 1-8 的整数，默认 `4`；单个文件下载时的分块并发数。
+  每个任务开始时读取一次；调大可能更容易触发 Telegram 限流。
+- **网页主题**：`web_theme` 是字符串，只接受 `light` / `dark` / `system`，默认 `system`；
+  设置页「网页设置」卡片直接读写这一项。服务端值为权威来源，前端 `localStorage.theme`
+  只用于首屏快速渲染；服务端不可用时保留本地选择。老库启动时会补写 `system`。
+- **网页标题速度**：`web_title_speed` 是布尔值，默认 `false`；开启后浏览器标签标题会显示
+  当前所有运行中任务的总下载速度（例如 `1.2 MB/s · 下载队列 · tg_down`），没有运行中
+  任务时显示 `无活动 · 下载队列 · tg_down`。设置页「网页设置」卡片直接读写；
+  老库启动时会补写 `false`。
 - **代理密码脱敏**：`http_proxy` 的密码在响应里固定返回 `***`，不会回传明文。
   提交时如果密码仍是 `***`，服务端沿用已保存的密码（Web 可以只改主机/端口而不重输密码）；
   要更换密码请提交完整 URL。
@@ -532,6 +715,123 @@ body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
   设为 `false` 后即使 `http_proxy` 有值也直连，代理地址本身保留。清除该键会恢复默认（启用）。
 - 清除代理：`{"http_proxy": null}`。
 - 未知键、非法值、只读键返回 400 `bad_request`。
+
+### 1.8 下载页草稿与历史
+
+下载页的输入草稿与最近解析过的输入都存数据库（`ui_drafts` 与 `download_inputs` 表），
+刷新 / 换浏览器后仍可恢复。两者都是全局的，不按账号区分；都含完整链接，按敏感数据处理，不写日志。
+
+#### 1.8.1 输入草稿
+
+```
+GET /api/v1/downloads/draft
+→ 200 {
+  "links": "",
+  "cache": { … },                 // 可选，上次解析摘要
+  "updated_at": 1763500000        // 从未保存时省略
+}
+
+PUT /api/v1/downloads/draft
+body: {"links":"https://t.me/...\nhttps://t.me/...","cache":{…}}
+→ 200 保存后的完整草稿
+→ 400 links 超过 256 KiB / 500 行，或字段类型错误
+```
+
+- 全量替换输入；没有草稿时返回默认值（200），不是 404。
+- **两个开关都不在草稿里**：`download_overwrite` / `download_expand_text_links`
+  已迁移为系统配置（见 §1.7），下载页的开关直接读写配置，不再随草稿保存。
+- `cache` 省略时保留已有缓存（避免自动保存把摘要冲掉），`cache: null` 显式清除；
+  非法 `cache` 丢弃本次缓存但仍保存输入。
+- `cache` 结构与「输入历史」的缓存一致，≤ 32 KiB；只用于展示，不参与创建下载。
+- 前端 `links` 变化 debounce 800ms 自动保存；摘要变化立即保存；`pagehide` 时用
+  `keepalive` 尽力补一次。多标签页 last-write-wins。
+- 清空 links 会保存空串；不删除行（草稿行保留，便于记录更新时间）。
+- 前端打开下载页并恢复出非空草稿时，若 `download_auto_preview=true`（默认）会自动解析一次
+  以刷新摘要与封面；该次自动解析不写历史、失败静默（错误仍展示在页面上）。
+  关闭该设置后只恢复草稿与摘要，手动「重新解析」不受影响。
+- 一次下载仍只接受 200 条链接；草稿允许更多行，便于先整理再解析。
+- 与 `GET /downloads/{id}` 同前缀，静态段 `draft` 优先于 `{id}`。
+
+#### 1.8.2 输入历史
+
+保存最近解析过的输入批次，下载页可展示并一键回填。与草稿不同：草稿只有一份、随输入覆盖；
+历史保留多份、按最近使用排序。
+
+```
+GET /api/v1/downloads/history?limit=20
+→ 200 {"items": [{
+  "id": 3,
+  "first_line": "https://t.me/example/2522",
+  "title": "今天的更新：三张现场图",   // 消息摘要，历史卡片标题
+  "line_count": 5,
+  "expand_text_links": false,
+  "overwrite": false,
+  "use_count": 2,
+  "summary": {"total": 3, "ok": 3, "failed": 0, "no_media": 0, "expanded": 0},
+  "chats": [{"kind": "channel", "title": "某频道", "username": "example"}],
+  "cache_truncated": false,
+  "created_at": 1763500000,
+  "last_used_at": 1763500100
+}]}
+
+GET /api/v1/downloads/history/{id}
+→ 200 同上 + "links": "完整文本" + "cache": {完整缓存}
+→ 404 记录不存在
+
+GET /api/v1/downloads/history/{id}/cover
+→ 200 image/jpeg                    // 该条历史第一张封面（thumbnail/ 磁盘缓存）
+→ 404 记录不存在，或没有封面 / 缓存文件已被清理
+
+POST /api/v1/downloads/history
+body: {
+  "links":"…",
+  "expand_text_links":false,
+  "overwrite":false,
+  "cache": { … }        // 可选；来自预览响应，非法时丢弃缓存但保留输入
+}
+→ 201 新建（响应为详情结构）
+→ 200 内容重复，已更新 last_used_at / use_count / cache（响应为详情结构）
+→ 400 links 超过 256 KiB / 500 行，或字段类型错误
+
+DELETE /api/v1/downloads/history/{id}   → 200 {"ok":true}
+DELETE /api/v1/downloads/history        → 200 {"ok":true,"removed":12}
+```
+
+- 列表只返回 `summary` / `chats` / `cache_truncated`，不返回完整 `links` 与缓存条目；回填时取详情。
+- `title` 是历史卡片标题（消息摘要）：取缓存第一条消息的正文/说明，折叠连续空白并截断 120 字；
+  纯媒体消息用 `[图片]` / `[视频]` / `[音频]` / `[文件]` 占位；没有缓存或摘要为空时省略，
+  前端退回 `first_line`。该字段随列表/详情一起返回，卡片不需要逐条再请求。
+- `cache_truncated` 表示 `summary.total > len(cache.items)`（只缓存前 20 条）。
+- 按 `last_used_at` 倒序；`limit` 默认 20，最大 20；只保留最近 20 条，超出后自动删除最旧记录。
+- 服务端按「换行归一后的 links」哈希去重；重复提交不新增行。
+  两个开关（`download_expand_text_links` / `download_overwrite`）都是全局配置，不参与去重：
+  只切换开关时复用同一行，并更新该行的开关快照与摘要。
+- 前端在「解析预览」或点击历史回填后的自动解析成功后记录；失败静默，不影响解析。
+  点击历史会回填 links 并立即解析一次（两个开关都是全局配置，不随历史回填），
+  成功后照常更新使用次数与摘要。
+- 封面：摘要里第一条带 `thumb_key` 的消息决定卡片封面；`cover` 接口直接从
+  `<数据目录>/thumbnail/` 读文件，缓存键随摘要落库，所以 token 过期或进程重启后仍可用。
+  没有封面或文件被清理时返回 404，前端退回类型图标。
+- 静态段 `history` 优先于 `{id}`。
+
+缓存字段（服务端白名单，超出部分截断/丢弃）：
+
+```json
+{
+  "v": 1,
+  "summary": {"total": 3, "ok": 3, "failed": 0, "no_media": 0, "expanded": 0},
+  "chats": [{"kind": "channel", "title": "某频道", "username": "example"}],
+  "items": [{"message_id": 2522, "chat_title": "某频道", "text": "正文前 200 字",
+             "media_kind": "video", "file_name": "clip.mp4", "size": 734003200,
+             "thumb_key": "9f86d081…"}],
+  "failures": [{"link": "…", "error": "…"}]
+}
+```
+
+- 缓存 ≤ 32 KiB；`items` ≤ 20、`chats` ≤ 5、`failures` ≤ 5，文本/错误各 200 字。
+- `thumb_key` 只接受 64 位十六进制，非法值直接丢弃（避免把缓存键当成路径使用）。
+- 不缓存缩略图/预览 URL、entities、`file_id`、`access_hash` 等会过期或敏感的字段。
+- 缓存只用于历史列表/详情展示；回填仍只恢复输入，不直接用缓存创建下载。
 
 ## 2. 规划中
 
@@ -943,103 +1243,6 @@ GET /rss/{token}/thumb/{message_id}
 - 只输出 RSS 2.0 + Media RSS，不提供 Atom / JSON Feed。
 - 相册 v1 一条消息一个 item，暂不合并成 `media:group`。
 - 媒体直链只服务**已完成**的本地下载任务，不代理 Telegram 的临时直链。
-
-### 2.5 下载页草稿与历史
-
-> 以下接口均未实现。设计细节见 [plan.md §3.4](./plan.md#34-下载页输入草稿规划)、
-> [§3.5](./plan.md#35-下载输入历史规划)。
-
-#### 2.5.1 输入草稿
-
-下载页的三个输入（`links`、`expand_text_links`、`overwrite`）自动保存到数据库，刷新 / 换浏览器后恢复。
-同时缓存一份上次解析摘要（只读展示），但**不自动重新解析**；预览 token 过期后由用户重新解析。
-
-```
-GET /api/v1/downloads/draft
-→ 200 {
-  "links": "",
-  "expand_text_links": false,
-  "overwrite": false,
-  "cache": { … },                 // 可选，上次解析摘要
-  "updated_at": 1763500000        // 从未保存时省略
-}
-
-PUT /api/v1/downloads/draft
-body: {"links":"https://t.me/...\nhttps://t.me/...","expand_text_links":false,"overwrite":false,"cache":{…}}
-→ 200 保存后的完整草稿
-→ 400 links 超过 256 KiB / 500 行，或字段类型错误
-```
-
-- 全量替换输入；没有草稿时返回默认值（200），不是 404。
-- `cache` 省略时保留已有缓存（避免自动保存把摘要冲掉），`cache: null` 显式清除。
-- `cache` 结构与「输入历史」的缓存一致，≤ 32 KiB；非法时丢弃本次缓存但仍保存输入。
-- 前端 debounce 800ms 自动保存；两个开关立即保存；`pagehide` 时尽力补一次。
-- 清空 links 会保存空串；不删除行，以保留两个开关状态。
-- 一次下载仍只接受 200 条链接；草稿允许更多行，便于先整理再解析。
-- 与 `GET /downloads/{id}` 同前缀，静态段 `draft` 必须优先于 `{id}`。
-
-#### 2.5.2 输入历史
-
-保存最近解析过的输入批次，下载页可展示并一键回填。与草稿不同：草稿只有一份、随输入覆盖；
-历史保留多份、按最近使用排序。
-
-```
-GET /api/v1/downloads/history?limit=20
-→ 200 {"items": [{
-  "id": 3,
-  "first_line": "https://t.me/example/2522",
-  "line_count": 5,
-  "expand_text_links": false,
-  "overwrite": false,
-  "use_count": 2,
-  "summary": {"total": 3, "ok": 3, "failed": 0, "no_media": 0, "expanded": 0},
-  "chats": [{"kind": "channel", "title": "某频道", "username": "example"}],
-  "cache_truncated": false,
-  "created_at": 1763500000,
-  "last_used_at": 1763500100
-}]}
-
-GET /api/v1/downloads/history/{id}
-→ 200 同上 + "links": "完整文本" + "cache": {完整缓存}
-→ 404 记录不存在
-
-POST /api/v1/downloads/history
-body: {
-  "links":"…",
-  "expand_text_links":false,
-  "overwrite":false,
-  "cache": { … }        // 可选；来自预览响应，非法时丢弃缓存但保留输入
-}
-→ 201 新建；内容重复时 200 并更新 last_used_at / use_count / cache
-→ 400 links 超过 256 KiB / 500 行，或字段类型错误
-
-DELETE /api/v1/downloads/history/{id}   → 200 {"ok":true}
-DELETE /api/v1/downloads/history        → 200 {"ok":true,"removed":12}
-```
-
-- 列表只返回 `summary` / `chats` / `cache_truncated`，不返回完整 `links` 与缓存条目；回填时取详情。
-- `cache_truncated` 表示 `summary.total > len(cache.items)`（只缓存前 20 条）。
-- 按 `last_used_at` 倒序；`limit` 默认 20，最大 20；只保留最近 20 条。
-- 服务端按「换行归一后的 links + 两个开关」哈希去重。
-- 前端只在「解析预览」成功后记录；失败静默，不影响解析。
-- 静态段 `history` 必须优先于 `{id}` 路由。
-
-缓存字段（服务端白名单，超出部分截断/丢弃）：
-
-```json
-{
-  "v": 1,
-  "summary": {"total": 3, "ok": 3, "failed": 0, "no_media": 0, "expanded": 0},
-  "chats": [{"kind": "channel", "title": "某频道", "username": "example"}],
-  "items": [{"message_id": 2522, "chat_title": "某频道", "text": "正文前 200 字",
-             "media_kind": "video", "file_name": "clip.mp4", "size": 734003200}],
-  "failures": [{"link": "…", "error": "…"}]
-}
-```
-
-- 缓存 ≤ 32 KiB；`items` ≤ 20、`chats` ≤ 5、`failures` ≤ 5，文本/错误各 200 字。
-- 不缓存缩略图/预览 URL、entities、`file_id`、`access_hash` 等会过期或敏感的字段。
-- 缓存只用于历史列表/详情展示；回填仍只恢复输入，不直接用缓存创建下载。
 
 ## 3. 代理与网络
 

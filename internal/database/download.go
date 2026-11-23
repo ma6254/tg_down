@@ -44,6 +44,8 @@ type DownloadTask struct {
 	// Overwrite 表示完成后直接覆盖同名文件（而不是加 " (1)" 后缀），
 	// 并在开始前丢弃已有 .part 从零下载。
 	Overwrite bool
+	// AllowOverLimit 表示允许在超过账号单文件上限时仍强制尝试下载。
+	AllowOverLimit bool
 	// ThumbnailURL 是创建任务时登记的缩略图地址（token 会过期）。
 	ThumbnailURL string `gorm:"size:255"`
 	// PreviewURL 是更大尺寸的预览图地址，供图片查看器使用。

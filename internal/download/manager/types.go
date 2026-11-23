@@ -7,6 +7,7 @@ package manager
 
 import (
 	"errors"
+	"time"
 
 	"github.com/ma6254/tg_down/internal/database"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
@@ -27,6 +28,8 @@ var (
 	ErrConflict = errors.New("下载任务当前状态不允许该操作")
 	// ErrThumbnailNotFound 表示任务没有可用的缩略图。
 	ErrThumbnailNotFound = errors.New("缩略图不存在")
+	// ErrFileNotFound 表示任务已完成，但磁盘上的文件不存在或不在下载根目录内。
+	ErrFileNotFound = errors.New("已下载文件不存在")
 	// ErrNoAccount 表示没有可用的当前账号。
 	ErrNoAccount = errors.New("没有可用的当前账号")
 	// ErrNoSession 表示当前账号的 session 文件不可用。
@@ -54,6 +57,23 @@ type Task struct {
 	Speed  int64 // B/s，仅 running 时有意义
 }
 
+// File 是已下载文件的元信息；文件句柄由调用方负责关闭。
+type File struct {
+	// Name 是磁盘上的实际文件名（可能带覆盖模式产生的后缀）。
+	Name    string
+	MIME    string
+	Size    int64
+	ModTime time.Time
+}
+
+// Stats 是下载队列的总览快照。
+type Stats struct {
+	// TotalSpeed 是所有运行中任务的合计速度，单位 B/s。
+	TotalSpeed int64
+	// Running 是当前执行中的任务数。
+	Running int
+}
+
 // CreateRequest 是创建任务请求。
 type CreateRequest struct {
 	Links     []string
@@ -61,6 +81,9 @@ type CreateRequest struct {
 	// Single 为 true 时只下载链接直接指向的那条消息，不展开相册；
 	// 为 false（默认）时相册链接会展开成整组任务，与 CLI 行为一致。
 	Single bool
+	// AllowOverLimit 为 true 时跳过本地的单文件上限预检，强制创建任务；
+	// Telegram 服务端仍可能拒绝，失败会体现在任务 error。
+	AllowOverLimit bool
 }
 
 // Skip 记录因「没有可下载媒体」或「超过单文件上限」跳过的链接。
@@ -77,10 +100,12 @@ type Failure struct {
 
 // CreateResult 是一次创建任务的结果。
 type CreateResult struct {
-	Created  []uint // 新建并已入队的任务
-	Existing []uint // 之前已存在的任务
-	Skipped  []Skip
-	Failed   []Failure
+	Created []uint // 新建并已入队的任务
+	// Restarted 是覆盖模式下被重置并重新入队的已有任务。
+	Restarted []uint
+	Existing  []uint // 之前已存在、本次未重跑的任务
+	Skipped   []Skip
+	Failed    []Failure
 }
 
 // ListQuery 是列表筛选条件；Status 为空表示全部。

@@ -6,6 +6,7 @@ import (
 
 	"github.com/ma6254/tg_down/internal/link"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
+	"github.com/ma6254/tg_down/internal/thumbcache"
 )
 
 // TestPreviewItemsAlbum 确认相册媒体会映射为 medias，并带单条消息链接。
@@ -94,6 +95,40 @@ func TestPreviewItemsPreviewURL(t *testing.T) {
 	}
 	if media.ThumbnailURL == media.PreviewURL {
 		t.Errorf("封面与大图不应共用同一个 token: %q", media.PreviewURL)
+	}
+	if !thumbcache.ValidKey(media.ThumbKey) {
+		t.Errorf("封面缓存键 = %q，期望 64 位十六进制", media.ThumbKey)
+	}
+}
+
+// TestPreviewItemsCommentSection 确认评论区摘要会映射，普通消息保持为空。
+func TestPreviewItemsCommentSection(t *testing.T) {
+	results := []mtproto.LinkResult{
+		{
+			Target:         link.Target{Raw: "https://t.me/a/1", Username: "a", MessageID: 1},
+			Chat:           mtproto.Peer{Kind: mtproto.PeerKindChannel, ID: 1, Title: "频道", Broadcast: true},
+			MessageID:      1,
+			CommentSection: &mtproto.CommentSection{Available: true, Count: 3},
+		},
+		{
+			Target:    link.Target{Raw: "https://t.me/a/2", Username: "a", MessageID: 2},
+			Chat:      mtproto.Peer{Kind: mtproto.PeerKindChannel, ID: 1, Title: "频道", Broadcast: true},
+			MessageID: 2,
+		},
+	}
+
+	items := NewPreviewItems(results, false, mtproto.Session{})
+	if len(items) != 2 {
+		t.Fatalf("items 数量 = %d，期望 2", len(items))
+	}
+	if items[0].CommentSection == nil {
+		t.Fatal("第一条缺少 comment_section")
+	}
+	if !items[0].CommentSection.Available || items[0].CommentSection.Count != 3 {
+		t.Errorf("comment_section = %+v", items[0].CommentSection)
+	}
+	if items[1].CommentSection != nil {
+		t.Errorf("普通消息不应有 comment_section: %+v", items[1].CommentSection)
 	}
 }
 

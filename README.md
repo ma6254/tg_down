@@ -4,7 +4,7 @@ Telegram 下载工具的 Go 后端。
 
 把 Telegram 里能看到的媒体按任务队列下载到本地磁盘：单用户、本地优先，默认只监听 `127.0.0.1`；需要对外暴露时再启用 Bearer token。前端是一个 React 单页应用，构建后通过 `go:embed` 打进同一个可执行文件。
 
-> **状态：HTTP 服务已接入账号、配置、链接解析、下载任务与内嵌前端**。
+> **状态：HTTP 服务已接入账号、配置、链接解析（含频道评论区）、下载任务与内嵌前端**。
 > `botapi` 登录与会话/消息浏览尚未接入；`python build.py` 默认把前端打进同一个可执行文件。
 > 完整规划见 [规划文档](./doc/plan.md)，接口见 [API 文档](./doc/api.md)。
 
@@ -16,8 +16,8 @@ Telegram 下载工具的 Go 后端。
 - **群 / 频道监控（规划中）**：持续检测新消息，按发送人、置顶、关键词、大小/时长等条件自动下载；随 `tg_down serve` 常驻运行，`monitor` 子命令只管理配置。设计见 [规划文档 §3.2](./doc/plan.md#32-群--频道监控规划)。
 - **RSS 输出（规划中）**：把监控的群 / 频道消息发布为 RSS 2.0（Media RSS）feed，阅读器可直接订阅；媒体条目默认指向已下载文件。设计见 [规划文档 §3.3](./doc/plan.md#33-rss-输出服务规划)。
 - **下载（已实现）**：任务队列、并发限流、SSE 实时进度、暂停 / 继续 / 重试、`.part` 断点续传。`FLOOD_WAIT` 目前只把限流原因写进任务 `error`，尚未自动挂起恢复。
-- **下载草稿（规划中）**：下载页的链接、展开正文链接与覆盖开关自动保存到数据库，刷新 / 换浏览器后恢复；同时缓存上次解析摘要。设计见 [规划文档 §3.4](./doc/plan.md#34-下载页输入草稿规划)。
-- **下载历史（规划中）**：下载页展示最近解析过的输入批次（含解析摘要缓存），点击回填；与草稿分开保存。设计见 [规划文档 §3.5](./doc/plan.md#35-下载输入历史规划)。
+- **下载草稿（已实现）**：下载页的链接、展开正文链接与覆盖开关自动保存到数据库，刷新 / 换浏览器后恢复；同时缓存上次解析摘要。接口见 [API 文档 §1.8](./doc/api.md#18-下载页草稿与历史)，设计见 [规划文档 §3.4](./doc/plan.md#34-下载页输入草稿已实现m12)。
+- **下载历史（已实现）**：下载页展示最近解析过的输入批次（含解析摘要缓存），点击回填；与草稿分开保存，按最近使用保留 20 条。接口见 [API 文档 §1.8](./doc/api.md#18-下载页草稿与历史)，设计见 [规划文档 §3.5](./doc/plan.md#35-下载输入历史已实现m13)。
 - **单二进制（已实现）**：前端产物内嵌，部署只拷贝一个可执行文件。
 - **安全（已实现）**：默认回环监听；非回环地址未配置 token 时拒绝启动；session（以及接入后的 bot token）不写日志、不通过接口回传。
 
@@ -44,6 +44,7 @@ internal/account/    账号 CRUD、登录流程、tdata 探测
 internal/tgclient/   客户端实现（目前只有 mtproto/）
 internal/link/       Telegram 链接解析
 internal/download/   任务管理、worker、续传、限流、进度
+internal/downloadinput/ 下载页草稿与历史（校验、摘要裁剪、去重）
 internal/avatar/     账号与 peer 头像磁盘缓存
 internal/thumbcache/ 媒体缩略图磁盘缓存
 internal/server/     路由、中间件、SSE、Web 静态资源托管
@@ -87,7 +88,7 @@ go build -o tg_down.exe .         # 快速构建（无内嵌前端，版本信�
 |---|---|---|
 | `--workdir` | 空 | 启动前切换工作目录，相对路径都基于它解析 |
 | `--download-dir` | `./downloads` | 下载根目录 |
-| `--max-concurrency` | `1` | 并发下载数，范围 1–8 |
+| `--max-concurrency` | `1` | 并发下载数，范围 1–8；仅在该键还不存在时写入 `settings.download_workers`，之后以配置为准 |
 | `--auth-token` | 空 | API 鉴权 token；监听非回环地址时**必填** |
 | `--botapi-base-url` | 空 | 预留：自建 Bot API 地址；Bot API 尚未接入，当前不影响行为 |
 | `--log-level` | `info` | 预留：`debug` / `info` / `warn` / `error`；当前只校验取值，日志级别固定 |
@@ -392,6 +393,12 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 | `api_id` | 自定义 Telegram 应用的 api_id（到 my.telegram.org 申请），需与 `api_hash` 同时配置 |
 | `api_hash` | 自定义 Telegram 应用的 api_hash，32 位十六进制；属于敏感信息 |
 | `api_custom_enabled` | 布尔值，默认 `false`；为 `true` 时才使用 `api_id` / `api_hash`，否则回退内置 desktop 凭据 |
+| `download_overwrite` | 布尔值，默认 `false`；下载时覆盖同名文件并从零下载。下载页的「覆盖同名文件」开关与设置页共用这一项 |
+| `download_expand_text_links` | 布尔值，默认 `false`；解析时展开正文里的文字链接。下载页的「展开正文里的链接」开关与设置页共用这一项 |
+| `download_auto_preview` | 布尔值，默认 `true`；打开下载页且草稿非空时自动解析一次；关闭后需手动点「解析预览」 |
+| `download_comments` | 布尔值，默认 `false`；下载页创建任务时同时下载频道帖子评论区的媒体文件（单帖最多 100 个评论媒体） |
+| `download_workers` | 整数，默认 `1`，范围 1-8；同时下载的文件数（对应 `--max-concurrency`，运行中修改对新任务生效） |
+| `download_threads` | 整数，默认 `4`，范围 1-8；单个文件的分块下载线程数 |
 | `current_account_id` | 当前选中的账号 ID，由 `account switch` 维护（手工设置需填已存在的账号 ID） |
 
 > 配置项的定义、校验与展示脱敏集中在 `internal/config` 包，命令层只负责读写与输出；
@@ -408,8 +415,15 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 代理只从配置读取：`http_proxy_enabled` 为 true（默认）且配置了 `http_proxy` 时登录与下载都走它，否则直连；没有对应的命令行参数。
 
 服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
-（`http_proxy_enabled=true`、`api_custom_enabled=false`）；
+（`http_proxy_enabled=true`、`api_custom_enabled=false`、`download_overwrite=false`、
+`download_expand_text_links=false`、`download_auto_preview=true`、`download_comments=false`、
+`download_workers=1`、`download_threads=4`、`web_theme=system`、`web_title_speed=false`）；
 `http_proxy`、`api_id` 等空默认值表示未配置，不会写入空行。
+
+- `web_theme`：网页主题，`light` / `dark` / `system`，默认 `system`；Web 设置页读写。
+  老库启动时自动补写该键，前端 localStorage 仅作首屏缓存。
+- `web_title_speed`：是否在浏览器标签标题显示当前总下载速度，默认 `false`；
+  Web 设置页读写，老库启动时自动补写 `false`。无运行中任务时标题显示「无活动」。
 
 - 设置时会校验协议与主机，非法值直接拒绝。
 - `config list` / `config get` 输出时会隐藏代理密码（`http://user:***@host`）。

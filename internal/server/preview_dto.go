@@ -3,6 +3,7 @@ package server
 import (
 	"github.com/ma6254/tg_down/internal/avatar"
 	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
+	"github.com/ma6254/tg_down/internal/thumbcache"
 )
 
 // NewPreviewErrorItem 为无法解析的链接生成一条只带错误的结果。
@@ -31,44 +32,19 @@ func NewPreviewItems(results []mtproto.LinkResult, expanded bool, session mtprot
 
 		item.MessageID = result.MessageID
 		item.Text = result.Text
-		item.Chat = &PreviewChat{
-			Kind:      string(result.Chat.Kind),
-			ID:        result.Chat.ID,
-			Title:     result.Chat.Title,
-			Username:  result.Chat.Username,
-			Broadcast: result.Chat.Broadcast,
-			Self:      result.Chat.Self,
-		}
-		if result.ChatAvatar != nil {
-			item.Chat.AvatarURL = newPeerAvatarURL(session, result.ChatAvatar)
-		}
+		chat := newPreviewChat(result.Chat, result.ChatAvatar, session)
+		item.Chat = &chat
 		if result.Sender != nil {
-			sender := &PreviewSender{
-				ID:       result.Sender.Peer.ID,
-				Name:     result.Sender.Name,
-				Username: result.Sender.Username,
-			}
-			if result.Sender.Avatar != nil {
-				sender.AvatarURL = newPeerAvatarURL(session, result.Sender.Avatar)
-			}
-			item.Sender = sender
+			sender := newPreviewSender(result.Sender, session)
+			item.Sender = &sender
 		}
-		for _, messageLink := range result.Links {
-			item.Links = append(item.Links, PreviewLink{Text: messageLink.Text, URL: messageLink.URL})
-		}
-		for _, entity := range result.Entities {
-			item.Entities = append(item.Entities, PreviewEntity{
-				Type:       entity.Type,
-				Offset:     entity.Offset,
-				Length:     entity.Length,
-				URL:        entity.URL,
-				UserID:     entity.UserID,
-				Language:   entity.Language,
-				DocumentID: entity.DocumentID,
-				Collapsed:  entity.Collapsed,
-				Date:       entity.Date,
-				DateFormat: entity.DateFormat,
-			})
+		item.Links = newPreviewLinks(result.Links)
+		item.Entities = newPreviewEntities(result.Entities)
+		if result.CommentSection != nil {
+			item.CommentSection = &PreviewCommentSection{
+				Available: result.CommentSection.Available,
+				Count:     result.CommentSection.Count,
+			}
 		}
 		if media := result.Media; media != nil {
 			item.Media = newPreviewMedia(media, session)
@@ -84,11 +60,78 @@ func NewPreviewItems(results []mtproto.LinkResult, expanded bool, session mtprot
 	return out
 }
 
+// newPreviewChat 把会话摘要映射成接口结构，并按需登记头像。
+func newPreviewChat(chat mtproto.Peer, avatar *mtproto.PeerPhoto, session mtproto.Session) PreviewChat {
+	preview := PreviewChat{
+		Kind:      string(chat.Kind),
+		ID:        chat.ID,
+		Title:     chat.Title,
+		Username:  chat.Username,
+		Broadcast: chat.Broadcast,
+		Self:      chat.Self,
+	}
+	if avatar != nil {
+		preview.AvatarURL = newPeerAvatarURL(session, avatar)
+	}
+	return preview
+}
+
+// newPreviewSender 把发送者映射成接口结构，并按需登记头像。
+func newPreviewSender(sender *mtproto.Sender, session mtproto.Session) PreviewSender {
+	preview := PreviewSender{
+		ID:       sender.Peer.ID,
+		Name:     sender.Name,
+		Username: sender.Username,
+	}
+	if sender.Avatar != nil {
+		preview.AvatarURL = newPeerAvatarURL(session, sender.Avatar)
+	}
+	return preview
+}
+
+// newPreviewLinks 复制消息正文里的文字链接。
+func newPreviewLinks(links []mtproto.MessageLink) []PreviewLink {
+	if len(links) == 0 {
+		return nil
+	}
+	out := make([]PreviewLink, 0, len(links))
+	for _, link := range links {
+		out = append(out, PreviewLink{Text: link.Text, URL: link.URL})
+	}
+	return out
+}
+
+// newPreviewEntities 复制正文富文本标注。
+func newPreviewEntities(entities []mtproto.MessageEntity) []PreviewEntity {
+	if len(entities) == 0 {
+		return nil
+	}
+	out := make([]PreviewEntity, 0, len(entities))
+	for _, entity := range entities {
+		out = append(out, PreviewEntity{
+			Type:       entity.Type,
+			Offset:     entity.Offset,
+			Length:     entity.Length,
+			URL:        entity.URL,
+			UserID:     entity.UserID,
+			Language:   entity.Language,
+			DocumentID: entity.DocumentID,
+			Collapsed:  entity.Collapsed,
+			Date:       entity.Date,
+			DateFormat: entity.DateFormat,
+		})
+	}
+	return out
+}
+
 // newPreviewMedia 把单条媒体转换成接口结构，并登记封面/大图的缩略图 token。
 func newPreviewMedia(media *mtproto.Media, session mtproto.Session) *PreviewMedia {
 	thumbnailURL := ""
+	thumbKey := ""
 	if media.Thumb != nil {
 		thumbnailURL = "/api/v1/media/thumbnail/" + RegisterThumbnail(session, *media.Thumb)
+		// 磁盘缓存键与 token 无关，历史卡片可以长期引用。
+		thumbKey = thumbcache.Key(*media.Thumb)
 	}
 	previewURL := ""
 	if media.Preview != nil {
@@ -109,6 +152,7 @@ func newPreviewMedia(media *mtproto.Media, session mtproto.Session) *PreviewMedi
 		MaxSize:      media.MaxSize,
 		ThumbnailURL: thumbnailURL,
 		PreviewURL:   previewURL,
+		ThumbKey:     thumbKey,
 	}
 }
 

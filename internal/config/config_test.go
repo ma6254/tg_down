@@ -23,6 +23,31 @@ func openStore(t *testing.T) *Store {
 	return NewStore(db)
 }
 
+// TestStoreInt 覆盖整数配置项的读取、默认值与校验。
+func TestStoreInt(t *testing.T) {
+	store := openStore(t)
+
+	value, err := store.Int(KeyDownloadThreads)
+	if err != nil || value != 4 {
+		t.Errorf("未配置时 = %d, %v，期望默认 4", value, err)
+	}
+	if err := store.Set(KeyDownloadThreads, "8"); err != nil {
+		t.Fatal(err)
+	}
+	if value, err := store.Int(KeyDownloadThreads); err != nil || value != 8 {
+		t.Errorf("读取 = %d, %v，期望 8", value, err)
+	}
+	if err := store.Set(KeyDownloadThreads, "9"); err == nil {
+		t.Error("超出 1-8 的值应被拒绝")
+	}
+	if err := store.Set(KeyDownloadThreads, "abc"); err == nil {
+		t.Error("非整数应被拒绝")
+	}
+	if _, err := store.Int(KeyHTTPProxy); err == nil {
+		t.Error("非整数配置项应返回错误")
+	}
+}
+
 // TestItemTypes 确认每个登记配置项都声明了有效的逻辑类型与默认值。
 func TestItemTypes(t *testing.T) {
 	for _, item := range Items() {
@@ -223,6 +248,29 @@ func TestValidateBool(t *testing.T) {
 	}
 }
 
+// TestValidateWebTheme 覆盖网页主题校验，并确认入库值统一小写。
+func TestValidateWebTheme(t *testing.T) {
+	for _, raw := range []string{"light", "dark", "system", "DARK", " System "} {
+		if err := ValidateWebTheme(raw); err != nil {
+			t.Errorf("ValidateWebTheme(%q) = %v，期望通过", raw, err)
+		}
+	}
+	for _, raw := range []string{"", "auto", "blue", "darkk"} {
+		if err := ValidateWebTheme(raw); err == nil {
+			t.Errorf("ValidateWebTheme(%q) 应报错", raw)
+		}
+	}
+
+	store := openStore(t)
+	if err := store.Set(KeyWebTheme, "DARK"); err != nil {
+		t.Fatalf("写入主题失败: %v", err)
+	}
+	value, ok, err := store.Get(KeyWebTheme)
+	if err != nil || !ok || value != "dark" {
+		t.Errorf("web_theme = %q, ok=%v, err=%v，期望小写 dark", value, ok, err)
+	}
+}
+
 // TestProxyToggle 覆盖 http_proxy_enabled 对实际代理的影响。
 func TestProxyToggle(t *testing.T) {
 	store := openStore(t)
@@ -280,9 +328,12 @@ func TestSeedDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("List 失败: %v", err)
 	}
-	// 目前默认值非空的项：api_custom_enabled（false）、http_proxy_enabled（true）。
-	if len(entries) != 2 {
-		t.Fatalf("默认配置应有 2 项，实际 %+v", entries)
+	// 默认值非空的项：api_custom_enabled（false）、download_auto_preview（true）、
+	// download_comments（false）、download_expand_text_links（false）、
+	// download_overwrite（false）、download_threads（4）、download_workers（1）、
+	// http_proxy_enabled（true）、web_theme（system）、web_title_speed（false）。
+	if len(entries) != 10 {
+		t.Fatalf("默认配置应有 10 项，实际 %+v", entries)
 	}
 	byKey := make(map[string]Entry, len(entries))
 	for _, entry := range entries {
@@ -294,13 +345,37 @@ func TestSeedDefaults(t *testing.T) {
 	if got := byKey[KeyAPICustomEnabled]; got.Value != "false" || got.Type != TypeBoolean {
 		t.Errorf("api_custom_enabled = %+v", got)
 	}
+	if got := byKey[KeyDownloadOverwrite]; got.Value != "false" || got.Type != TypeBoolean {
+		t.Errorf("download_overwrite = %+v", got)
+	}
+	if got := byKey[KeyDownloadExpandTextLinks]; got.Value != "false" || got.Type != TypeBoolean {
+		t.Errorf("download_expand_text_links = %+v", got)
+	}
+	if got := byKey[KeyDownloadAutoPreview]; got.Value != "true" || got.Type != TypeBoolean {
+		t.Errorf("download_auto_preview = %+v", got)
+	}
+	if got := byKey[KeyDownloadComments]; got.Value != "false" || got.Type != TypeBoolean {
+		t.Errorf("download_comments = %+v", got)
+	}
+	if got := byKey[KeyDownloadWorkers]; got.Value != "1" || got.Type != TypeInteger {
+		t.Errorf("download_workers = %+v", got)
+	}
+	if got := byKey[KeyDownloadThreads]; got.Value != "4" || got.Type != TypeInteger {
+		t.Errorf("download_threads = %+v", got)
+	}
+	if got := byKey[KeyWebTheme]; got.Value != DefaultWebTheme || got.Type != TypeString {
+		t.Errorf("web_theme = %+v", got)
+	}
+	if got := byKey[KeyWebTitleSpeed]; got.Value != DefaultWebTitleSpeed || got.Type != TypeBoolean {
+		t.Errorf("web_title_speed = %+v", got)
+	}
 
 	// 幂等：再次调用不会重复插入。
 	if err := SeedDefaults(store.db); err != nil {
 		t.Fatalf("再次 SeedDefaults 失败: %v", err)
 	}
-	if entries, _ := store.List(); len(entries) != 2 {
-		t.Errorf("重复调用后应有 2 项，实际 %+v", entries)
+	if entries, _ := store.List(); len(entries) != 10 {
+		t.Errorf("重复调用后应有 10 项，实际 %+v", entries)
 	}
 
 	// 已有任意配置时不补默认值。
