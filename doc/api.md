@@ -275,7 +275,8 @@ GET /api/v1/accounts/{id}/avatar
 ### 1.4 链接解析
 
 等价于 CLI 的 `tg_down download -u <链接>`：解析链接指向的消息，返回正文、
-正文里的文字链接与媒体元数据。只联网读取，不写数据库、不创建下载任务。
+正文里的文字链接与媒体元数据。不创建下载任务；消息快照会写进 `message_cache`
+表做本地缓存（见 1.4.2），只服务展示，下载前仍会重新读取消息。
 
 #### 1.4.1 预览
 
@@ -283,12 +284,17 @@ GET /api/v1/accounts/{id}/avatar
 POST /api/v1/links/preview
 body: {
   "links": ["https://t.me/JPD233/2522"],
-  "expand_text_links": false     // 可选；true 时展开正文里的文字链接，只展开一层
+  "expand_text_links": false,    // 可选；true 时展开正文里的文字链接，只展开一层
+  "refresh": false               // 可选；true 时绕过消息缓存重新读取（新结果仍写回缓存）
 }
 → 200 {
   "items": [{
     "link": "https://t.me/JPD233/2522",
     "message_id": 2522,
+    "cached": true,                 // 可选；来自本地缓存，数据可能不是最新的
+    "cached_at": 1767225600,        // 可选；缓存快照的获取时间（Unix 秒）
+    "stale": false,                 // 可选；缓存已过期且重取失败，正文是旧快照
+    "gone": false,                  // 可选；消息已删除或当前账号不可见
     "comment_section": {            // 仅频道帖子开启评论时出现
       "available": true,            // 评论区是否存在（0 条评论时也可能为 true）
       "count": 1                    // 评论总数
@@ -354,6 +360,11 @@ body: {
   `thumbnail_url` token 不同：换 token 或进程重启后仍指向同一张图，下载页历史用它取封面。
 - 相册消息会额外返回 `medias`：每条媒体带自己的 `message_id` 与 `link`，前端按列表逐条展示和入队；`media` 仍保留为链接指向的那一条。`POST /downloads` 传相册链接时，服务端会为每条媒体各建一个任务。
 - `expand_text_links=true` 时，展开出的条目带 `expanded: true`，并计入 `summary.expanded`；展开上限 200 条（超过时 `summary.truncated=true`），正文里不是消息链接的条数计入 `summary.skipped_links`。
+- 消息快照按 `(会话, 消息 ID)` 缓存在 `message_cache` 表，正常有效期 24 小时；命中时只做会话定位，不再读取消息。过期后同步重取，重取失败返回旧快照并带 `stale: true`，不会让整次预览失败。消息被删除或当前账号不可见时，先返回上次的快照并带 `gone: true`，下次再解析才可能彻底报错。
+- 会话定位（用户名 → 会话、私有频道 ID → 会话）按账号缓存在 `peer_cache` 表，有效期 24 小时。会话和消息都命中时整轮预览**不连接 Telegram**；这就是「重复粘贴同一批链接瞬间出结果」的原因。换账号后按新账号重新解析，`access_hash` 不会串。
+- `cached`/`stale`/`gone` 都是可选字段，false 时省略。`cached_at` 只在 `cached=true` 时出现，表示这份快照取到的时间；对 `gone` 的消息它是**最初取到正文**的时间，不是「确认删除」的时间。
+- `media.max_size` 与 `downloadable` 始终按**当前账号**重算，不会沿用缓存里另一个账号的上限。
+- 缓存由 `settings.message_cache_enabled` 控制（默认 `true`）；关闭后每次都联网读取，消息被编辑后可立刻看到新内容。
 - 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；502 `preview_failed`（连接或 Telegram 报错）；504 `preview_timeout`。
 
 #### 1.4.2 评论区
@@ -386,7 +397,7 @@ GET /api/v1/links/comments?link=<帖子链接>&limit=20&offset_id=0
       "kind": "video", "file_name": "…mp4", "size": 73117256, "downloadable": true
     },
     "media_error": "",          // 媒体解析失败时的原因
-    "reply_to": {"message_id": 10367, "quote": "…"}  // 可选
+    "reply_to": {"message_id": 10367, "quote": "…"}  // 可选；只表示「回复某条评论」
   }],
   "next_offset_id": 0           // 加载更早评论时传给 offset_id；0 表示没有更多
 }
@@ -397,6 +408,8 @@ GET /api/v1/links/comments?link=<帖子链接>&limit=20&offset_id=0
 - 只支持**广播频道帖子**；普通群/私聊返回 200，`available=false` 并带 `reason`。
 - 帖子没有开启评论时返回 200，`available=false`、`comments=[]`。
 - 评论区在频道的关联讨论组里；相册帖在讨论组里有多条副本，服务端取 ID 最小的那条作为线程起点。
+- 「帖子 → 讨论组线程」的定位结果按账号缓存 30 天（`thread_cache` 表）：命中时跳过读帖子、查讨论组、定位线程三步，只读一页评论。评论内容本身**不缓存**，所以不会看到过期的评论列表。
+- `reply_to` 只在评论真的回复了另一条评论时出现。讨论组里每条消息的 `reply_to` 都指向线程起点（帖子在讨论组的副本），这种「挂在帖子下面」不算回复，服务端会过滤掉，前端不必再判断。
 - 评论里的媒体链接指向评论消息本身（`t.me/<群>/<评论ID>` 或 `t.me/c/<群>/<评论ID>`），可复用下载接口。
 - `limit` 默认 20、最大 50；`offset_id` 取上一页的 `next_offset_id`。评论按时间倒序（最新在前）。
 - 错误：400 `bad_request`；409 `conflict`（没有当前账号 / session 不可用）；
@@ -670,15 +683,15 @@ body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
 
 - `type` 是值的逻辑类型（`string` / `integer` / `boolean`），由后端 `config.items` 定义；
   `value` 仍以字符串存储，前端可据此选择输入控件。
-- `default` 是未配置时使用的默认值；目前 `http_proxy_enabled`、`download_auto_preview`
-  默认 `"true"`，`download_workers` 默认 `"1"`、`download_threads` 默认 `"4"`，
+- `default` 是未配置时使用的默认值；目前 `http_proxy_enabled`、`download_auto_preview`、
+  `message_cache_enabled` 默认 `"true"`，`download_workers` 默认 `"1"`、`download_threads` 默认 `"4"`，
   `web_theme` 默认 `"system"`，`api_custom_enabled`、`download_overwrite`、
   `download_expand_text_links`、`download_comments` 与 `web_title_speed` 默认 `"false"`。
 - 服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
   （当前是 `http_proxy_enabled=true`、`api_custom_enabled=false`、
   `download_overwrite=false`、`download_expand_text_links=false`、
   `download_auto_preview=true`、`download_comments=false`、`download_workers=1`、
-  `download_threads=4`、`web_theme=system` 与 `web_title_speed=false`）；
+  `download_threads=4`、`message_cache_enabled=true`、`web_theme=system` 与 `web_title_speed=false`）；
   空默认值表示未配置，不会落库。老库启动时也会补写缺失的下载设置与网页设置
   （两个开关沿用旧草稿值或 `false`，自动解析写 `true`，
   并行文件数沿用 `--max-concurrency`，线程数写 `4`，网页主题写 `system`，
@@ -696,6 +709,9 @@ body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
   普通频道帖子任务会同时读取评论区媒体并入队（单帖最多 10 页评论、100 个评论媒体）。
   `single=true` 的单条媒体下载和 `?comment=` 评论链接不会展开评论区；设置页的
   「下载评论区」开关直接读写这一项。
+- **消息缓存**：`message_cache_enabled` 是布尔值，默认 `true`；控制链接预览是否复用
+  `message_cache` 表里的消息快照。关闭后每次预览都重新联网读取，消息被编辑后可立即看到
+  新内容；缓存只服务展示，下载前仍会重新读取消息拿新的 `file_reference`。
 - **并行文件数**：`download_workers` 是 1-8 的整数，默认 `1`；同时执行的任务数。
   服务运行中修改后，新开始的任务按新值限制并发（正在运行的任务不打断）。
   首次补写该键时沿用启动参数 `--max-concurrency` 的值。
@@ -715,6 +731,22 @@ body: {"http_proxy":"socks5://127.0.0.1:1080"}   // 值为 null 表示删除
   设为 `false` 后即使 `http_proxy` 有值也直连，代理地址本身保留。清除该键会恢复默认（启用）。
 - 清除代理：`{"http_proxy": null}`。
 - 未知键、非法值、只读键返回 400 `bad_request`。
+
+#### 1.7.1 缓存管理
+
+```
+GET /api/v1/cache
+→ 200 {"messages": 128, "peers": 12, "threads": 3}
+
+DELETE /api/v1/cache
+→ 200 {"messages": 128, "peers": 12, "threads": 3}   // 本次删除的行数
+```
+
+- `messages` 是消息快照（`message_cache`）、`peers` 是会话定位（`peer_cache`）、
+  `threads` 是评论线程定位（`thread_cache`），单位都是行数。
+- 清空只删数据库行：磁盘缩略图缓存（`<数据目录>/thumbnail/`）与已下载文件不受影响。
+- 清空后第一次预览会重新连接 Telegram 并重新定位，耗时回到冷启动水平；
+  设置页「本地缓存」卡片显示这三个数字并提供清空入口。
 
 ### 1.8 下载页草稿与历史
 

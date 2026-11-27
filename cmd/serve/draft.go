@@ -4,12 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"strconv"
+	"time"
 
 	"github.com/ma6254/tg_down/internal/config"
 	"github.com/ma6254/tg_down/internal/database"
 	"github.com/ma6254/tg_down/internal/download/manager"
 	"github.com/ma6254/tg_down/internal/downloadinput"
+	"github.com/ma6254/tg_down/internal/msgcache"
 	"github.com/ma6254/tg_down/internal/server"
 	"github.com/ma6254/tg_down/internal/thumbcache"
 	"github.com/ma6254/tg_down/internal/utils"
@@ -44,6 +47,54 @@ func mapHistoryError(err error) error {
 		return fmt.Errorf("%w: %v", server.ErrDownloadHistoryNotFound, err)
 	}
 	return err
+}
+
+// messageCacheRetention 是消息缓存的保留期：超过这么久没被用过的行会被清掉。
+const messageCacheRetention = 90 * 24 * time.Hour
+
+// pruneMessageCache 删除长期未使用的消息缓存。
+//
+// 分小批删除，避免一次性拿写锁太久；服务启动阶段调用，失败只记录日志。
+func pruneMessageCache() error {
+	db, err := utils.OpenDatabase()
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+
+	cache := msgcache.New(db)
+	before := time.Now().Add(-messageCacheRetention)
+
+	var total int64
+	for i := 0; i < 20; i++ {
+		removed, err := cache.Prune(before, 500)
+		if err != nil {
+			return err
+		}
+		total += removed
+		if removed < 500 {
+			break
+		}
+	}
+	if total > 0 {
+		log.Printf("清理消息缓存 %d 行", total)
+	}
+	// 会话定位缓存按自身有效期清理，与消息缓存的保留期无关。
+	peers, err := cache.PrunePeers(500)
+	if err != nil {
+		return err
+	}
+	if peers > 0 {
+		log.Printf("清理会话缓存 %d 行", peers)
+	}
+	threads, err := cache.PruneThreads(500)
+	if err != nil {
+		return err
+	}
+	if threads > 0 {
+		log.Printf("清理评论线程缓存 %d 行", threads)
+	}
+	return nil
 }
 
 // normalizeDownloadHistory 修正旧版本留下的重复历史记录。

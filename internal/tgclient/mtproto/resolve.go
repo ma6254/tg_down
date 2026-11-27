@@ -4,11 +4,13 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
+	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 
 	"github.com/ma6254/tg_down/internal/link"
@@ -97,6 +99,15 @@ type LinkResult struct {
 	// CommentSection 是频道帖子的评论区摘要；普通消息/评论链接为空。
 	CommentSection *CommentSection
 	Err            error
+
+	// Cached 表示结果来自本地缓存（数据可能不是最新的）。
+	Cached bool
+	// CachedAt 是这份缓存快照的获取时间；Cached 为 false 时是零值。
+	CachedAt time.Time
+	// Stale 表示命中缓存但已过期，且重取失败，返回的是旧快照。
+	Stale bool
+	// Gone 表示消息已删除或当前账号不可见；此时 Media 与 Text 是上次的快照。
+	Gone bool
 }
 
 // MessageURL 返回一条消息的链接；私聊等拼不出链接的场景返回空串。
@@ -113,147 +124,244 @@ func (p Peer) MessageURL(messageID int) string {
 	return ""
 }
 
-// ResolveLinks 解析链接指向的会话与消息，并提取媒体信息。
+// ResolvedTarget 是「链接 → 会话 + 消息 ID」的定位结果。
 //
-// 多条链接共用一次连接和会话缓存；单条失败写进对应结果的 Err，不影响其它链接。
-// 返回 error 表示连接或登录状态等整体性失败。
-func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]LinkResult, error) {
-	opts := s.options()
-	if opts.APIID <= 0 || opts.APIHash == "" {
-		return nil, errors.New("缺少 api 凭据")
-	}
-	if opts.SessionPath == "" {
-		return nil, errors.New("缺少 session 路径")
-	}
-	if _, err := os.Stat(opts.SessionPath); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, fmt.Errorf("未找到 session 文件 %s，请先执行 account login", opts.SessionPath)
-		}
-		return nil, fmt.Errorf("读取 session 文件: %w", err)
-	}
+// Err 非空表示这条链接定位失败（用户名不存在、账号没加入频道等）；
+// 「消息已删除」要读到消息之后才知道，不在这里判定。
+type ResolvedTarget struct {
+	Target    link.Target
+	Peer      Peer
+	MessageID int
+	Err       error
+}
 
-	client, err := newClient(opts)
+// ResolveResult 是一次定位的结果。
+//
+// MaxSize 是当前账号的单文件上限，和链接一起返回：同一个库可能被普通账号和
+// Premium 账号共用，缓存命中时必须用它重算 Downloadable，不能沿用旧值。
+type ResolveResult struct {
+	Targets []ResolvedTarget
+	MaxSize int64
+}
+
+// ResolveTargets 只做会话定位，不读取消息。
+//
+// 与 ReadMessages 配对使用：调用方在这两步之间查询缓存，只把未命中的消息
+// 交给 ReadMessages，避免为了看一眼缓存而先读一遍全部消息。
+func (s Session) ResolveTargets(ctx context.Context, targets []link.Target) (ResolveResult, error) {
+	var result ResolveResult
+	err := s.runWithClient(ctx, func(ctx context.Context, client *telegram.Client, self *tg.User) error {
+		result.MaxSize = accountMaxSize(self)
+		result.Targets = resolveTargetsIn(ctx, client.API(), targets)
+		return nil
+	})
 	if err != nil {
-		return nil, err
+		return ResolveResult{}, err
+	}
+	return result, nil
+}
+
+// ReadMessages 读取已定位到的消息并组装结果；maxSize 来自 ResolveTargets。
+//
+// 单条失败写进对应结果的 Err，不影响其它链接；返回 error 表示连接或登录状态
+// 等整体性失败。
+func (s Session) ReadMessages(ctx context.Context, items []ResolvedTarget, maxSize int64) ([]LinkResult, error) {
+	if len(items) == 0 {
+		return nil, nil
+	}
+	if maxSize <= 0 {
+		maxSize = MaxFileSize
 	}
 
-	results := make([]LinkResult, len(targets))
-	for i := range targets {
-		results[i] = LinkResult{Target: targets[i]}
-	}
-
-	err = client.Run(ctx, func(ctx context.Context) error {
-		status, err := client.Auth().Status(ctx)
-		if err != nil {
-			return friendlyError(fmt.Errorf("查询登录状态: %w", err))
-		}
-		if !status.Authorized {
-			return errors.New("session 已失效，请重新执行 account login")
-		}
-
-		self, err := client.Self(ctx)
-		if err != nil {
-			return fmt.Errorf("读取账号信息: %w", err)
-		}
-		maxSize := MaxFileSize
-		if self.Premium {
-			maxSize = MaxFileSizePremium
-		}
-
-		resolver := newPeerResolver(client.API())
-
-		// 先解析每条链接的会话与消息 ID，再按会话分组批量取消息：
-		// 几十条评论只发一次 channels.getMessages，避免逐条 getHistory 触发 FLOOD_WAIT。
-		peers := make([]Peer, len(results))
-		messageIDs := make([]int, len(results))
-		groups := make(map[string][]int)
-		for i := range results {
-			peer, messageID, err := resolver.resolveTarget(ctx, results[i].Target)
-			if err != nil {
-				results[i].Err = err
-				continue
-			}
-			peers[i], messageIDs[i] = peer, messageID
-			key := peerKey(peer.Kind, peer.ID)
-			groups[key] = append(groups[key], i)
-		}
-
-		for _, indexes := range groups {
-			peer := peers[indexes[0]]
-			ids := make([]int, 0, len(indexes))
-			for _, i := range indexes {
-				ids = append(ids, messageIDs[i])
-			}
-
-			messages, users, chatPhotoID, err := fetchMessages(ctx, client.API(), peer, ids)
-			if err != nil {
-				for _, i := range indexes {
-					results[i].Err = err
-				}
-				continue
-			}
-
-			for _, i := range indexes {
-				msg, ok := messages[messageIDs[i]]
-				if !ok {
-					results[i].Err = fmt.Errorf("消息 %d 不存在或已被删除", messageIDs[i])
-					continue
-				}
-
-				results[i].Chat = peers[i]
-				if chatPhotoID != 0 {
-					results[i].ChatAvatar = &PeerPhoto{Peer: peers[i], PhotoID: chatPhotoID}
-				}
-				if groupLike(peers[i]) {
-					results[i].Sender = senderOf(msg, users)
-				}
-				results[i].MessageID = messageIDs[i]
-				if !targets[i].IsComment() {
-					if replies, ok := msg.GetReplies(); ok && replies.Comments {
-						results[i].CommentSection = &CommentSection{
-							Available: true,
-							Count:     replies.Replies,
-						}
-					}
-				}
-				text, entities := trimMessage(msg.Message, messageEntities(msg))
-				results[i].Text = text
-				results[i].Entities = entities
-				results[i].Links = messageLinks(msg)
-
-				media, err := mediaFromMessage(msg)
-				if err != nil {
-					// 纯文本消息不算失败：没有文件可下，但正文仍然有展示价值。
-					if errors.Is(err, ErrNoMedia) {
-						continue
-					}
-					results[i].Err = err
-					continue
-				}
-
-				media.MaxSize = maxSize
-				media.Downloadable = media.Size <= maxSize
-				media.Link = mediaLink(targets[i], media, peers[i])
-				results[i].Media = media
-
-				// 相册的每条媒体是独立消息：链接通常指向第一张，
-				// 只取这一条会把整组图片/视频漏掉。
-				if media.GroupedID != 0 {
-					album, err := fetchAlbum(ctx, client.API(), peers[i], msg.ID, media.GroupedID)
-					if err != nil {
-						// 相册读取失败不影响已拿到的这一条。
-						continue
-					}
-					results[i].Medias = albumMedias(peers[i], album, media.GroupedID, maxSize)
-				}
-			}
-		}
+	var results []LinkResult
+	err := s.runWithClient(ctx, func(ctx context.Context, client *telegram.Client, _ *tg.User) error {
+		results = readMessagesIn(ctx, client.API(), items, maxSize)
 		return nil
 	})
 	if err != nil {
 		return nil, err
 	}
 	return results, nil
+}
+
+// ResolveLinks 解析链接指向的会话与消息，并提取媒体信息。
+//
+// 多条链接共用一次连接和会话缓存；单条失败写进对应结果的 Err，不影响其它链接。
+// 返回 error 表示连接或登录状态等整体性失败。
+func (s Session) ResolveLinks(ctx context.Context, targets []link.Target) ([]LinkResult, error) {
+	var results []LinkResult
+	err := s.runWithClient(ctx, func(ctx context.Context, client *telegram.Client, self *tg.User) error {
+		resolved := resolveTargetsIn(ctx, client.API(), targets)
+		results = readMessagesIn(ctx, client.API(), resolved, accountMaxSize(self))
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return results, nil
+}
+
+// runWithClient 取得一条就绪的常驻连接，再执行 fn。
+//
+// 连接在进程内复用（见 pool.go）：首次调用完成握手与授权检查，之后只剩请求本身，
+// 不再每次预览都付一遍建连成本。预览全部命中缓存时压根不会走到这里。
+//
+// fn 拿到的是授权检查时已经取回的账号信息，调用方不必再发一次 users.getUsers。
+func (s Session) runWithClient(ctx context.Context, fn func(context.Context, *telegram.Client, *tg.User) error) error {
+	client, self, err := s.acquire(ctx)
+	if err != nil {
+		return err
+	}
+	return fn(ctx, client, self)
+}
+
+// accountMaxSize 按账号的 Premium 状态返回单文件上限。
+func accountMaxSize(self *tg.User) int64 {
+	if self != nil && self.Premium {
+		return MaxFileSizePremium
+	}
+	return MaxFileSize
+}
+
+// resolveConcurrency 是并发定位链接的上限。
+//
+// 定位是一条一次 RPC 的事情，串行处理会让预览耗时随链接数线性增长；
+// 并发太高又容易触发 FLOOD_WAIT，四条是经验值。
+const resolveConcurrency = 4
+
+// resolveTargetsIn 把链接批量定位成「会话 + 消息 ID」，单条失败写进 Err。
+//
+// 多条链接并发解析（结果顺序与输入一致）；同一个用户名在一轮里只会真正解析一次。
+func resolveTargetsIn(ctx context.Context, api *tg.Client, targets []link.Target) []ResolvedTarget {
+	resolver := newPeerResolver(api)
+	out := make([]ResolvedTarget, len(targets))
+
+	// 单条时并发没有意义，顺序执行更省事。
+	if len(targets) < 2 {
+		for i := range targets {
+			out[i] = ResolvedTarget{Target: targets[i]}
+			peer, messageID, err := resolver.resolveTarget(ctx, targets[i])
+			if err != nil {
+				out[i].Err = err
+				continue
+			}
+			out[i].Peer, out[i].MessageID = peer, messageID
+		}
+		return out
+	}
+
+	var wg sync.WaitGroup
+	limit := make(chan struct{}, resolveConcurrency)
+	for i := range targets {
+		out[i] = ResolvedTarget{Target: targets[i]}
+
+		wg.Add(1)
+		limit <- struct{}{}
+		go func(i int) {
+			defer wg.Done()
+			defer func() { <-limit }()
+
+			peer, messageID, err := resolver.resolveTarget(ctx, targets[i])
+			if err != nil {
+				out[i].Err = err
+				return
+			}
+			out[i].Peer, out[i].MessageID = peer, messageID
+		}(i)
+	}
+	wg.Wait()
+	return out
+}
+
+// readMessagesIn 按会话分组批量读取消息并组装结果。
+//
+// 分组是必要的：几十条评论只发一次 channels.getMessages，
+// 逐条 getHistory 很容易触发 FLOOD_WAIT。
+func readMessagesIn(ctx context.Context, api *tg.Client, items []ResolvedTarget, maxSize int64) []LinkResult {
+	results := make([]LinkResult, len(items))
+	groups := make(map[string][]int)
+	for i := range items {
+		results[i] = LinkResult{Target: items[i].Target}
+		if items[i].Err != nil {
+			results[i].Err = items[i].Err
+			continue
+		}
+		key := peerKey(items[i].Peer.Kind, items[i].Peer.ID)
+		groups[key] = append(groups[key], i)
+	}
+
+	for _, indexes := range groups {
+		peer := items[indexes[0]].Peer
+		ids := make([]int, 0, len(indexes))
+		for _, i := range indexes {
+			ids = append(ids, items[i].MessageID)
+		}
+
+		messages, users, chatPhotoID, err := fetchMessages(ctx, api, peer, ids)
+		if err != nil {
+			for _, i := range indexes {
+				results[i].Err = err
+			}
+			continue
+		}
+
+		for _, i := range indexes {
+			item := items[i]
+			msg, ok := messages[item.MessageID]
+			if !ok {
+				results[i].Err = &MessageGoneError{MessageID: item.MessageID}
+				continue
+			}
+
+			results[i].Chat = peer
+			if chatPhotoID != 0 {
+				results[i].ChatAvatar = &PeerPhoto{Peer: peer, PhotoID: chatPhotoID}
+			}
+			if groupLike(peer) {
+				results[i].Sender = senderOf(msg, users)
+			}
+			results[i].MessageID = item.MessageID
+			if !item.Target.IsComment() {
+				if replies, ok := msg.GetReplies(); ok && replies.Comments {
+					results[i].CommentSection = &CommentSection{
+						Available: true,
+						Count:     replies.Replies,
+					}
+				}
+			}
+			text, entities := trimMessage(msg.Message, messageEntities(msg))
+			results[i].Text = text
+			results[i].Entities = entities
+			results[i].Links = messageLinks(msg)
+
+			media, err := mediaFromMessage(msg)
+			if err != nil {
+				// 纯文本消息不算失败：没有文件可下，但正文仍然有展示价值。
+				if errors.Is(err, ErrNoMedia) {
+					continue
+				}
+				results[i].Err = err
+				continue
+			}
+
+			media.MaxSize = maxSize
+			media.Downloadable = media.Size <= maxSize
+			media.Link = mediaLink(item.Target, media, peer)
+			results[i].Media = media
+
+			// 相册的每条媒体是独立消息：链接通常指向第一张，
+			// 只取这一条会把整组图片/视频漏掉。
+			if media.GroupedID != 0 {
+				album, err := fetchAlbum(ctx, api, peer, msg.ID, media.GroupedID)
+				if err != nil {
+					// 相册读取失败不影响已拿到的这一条。
+					continue
+				}
+				results[i].Medias = albumMedias(peer, album, media.GroupedID, maxSize)
+			}
+		}
+	}
+	return results
 }
 
 // ResolveLink 是单条链接的便捷封装。
@@ -272,8 +380,12 @@ func (s Session) ResolveLink(ctx context.Context, target link.Target) (*LinkResu
 }
 
 // peerResolver 在一次连接内缓存会话，避免每条链接都重复解析用户名或拉会话列表。
+//
+// 多条链接并发解析时会被多个 goroutine 同时访问：map 一律在 mu 保护下读写，
+// 网络请求放在锁外做（否则并发就没有意义了）。
 type peerResolver struct {
 	api           *tg.Client
+	mu            sync.Mutex
 	byKey         map[string]Peer
 	byUsername    map[string]Peer
 	linked        map[string]Peer
@@ -331,7 +443,9 @@ func (r *peerResolver) resolve(ctx context.Context, target link.Target) (Peer, e
 	if err := r.loadDialogs(ctx); err != nil {
 		return Peer{}, err
 	}
+	r.mu.Lock()
 	peer, ok := r.byKey[peerKey(PeerKindChannel, target.ChannelID)]
+	r.mu.Unlock()
 	if !ok {
 		return Peer{}, fmt.Errorf("当前账号的会话列表里没有频道 %d；请确认已用该账号加入该频道", target.ChannelID)
 	}
@@ -340,21 +454,27 @@ func (r *peerResolver) resolve(ctx context.Context, target link.Target) (Peer, e
 
 // resolveUsername 通过公开用户名解析会话，同一条链接的重复用户只查一次。
 func (r *peerResolver) resolveUsername(ctx context.Context, username string) (Peer, error) {
-	if peer, ok := r.byUsername[username]; ok {
+	r.mu.Lock()
+	peer, ok := r.byUsername[username]
+	r.mu.Unlock()
+	if ok {
 		return peer, nil
 	}
 
+	// 解析请求放在锁外：并发解析是这条路径的主要收益，不能串行化。
 	resolved, err := r.api.ContactsResolveUsername(ctx, &tg.ContactsResolveUsernameRequest{Username: username})
 	if err != nil {
 		return Peer{}, fmt.Errorf("解析 @%s: %w", username, friendlyError(err))
 	}
-	peer, err := peerFromResolved(resolved)
+	peer, err = peerFromResolved(resolved)
 	if err != nil {
 		return Peer{}, fmt.Errorf("解析 @%s: %w", username, err)
 	}
 
+	r.mu.Lock()
 	r.byUsername[username] = peer
 	r.byKey[peerKey(peer.Kind, peer.ID)] = peer
+	r.mu.Unlock()
 	return peer, nil
 }
 
@@ -367,8 +487,12 @@ func (r *peerResolver) linkedChat(ctx context.Context, channel Peer) (Peer, erro
 // linkedChatInfo 与 linkedChat 相同，但同时返回讨论组头像的 photo ID。
 func (r *peerResolver) linkedChatInfo(ctx context.Context, channel Peer) (Peer, int64, error) {
 	key := peerKey(channel.Kind, channel.ID)
-	if peer, ok := r.linked[key]; ok {
-		return peer, r.linkedPhotoID[key], nil
+	r.mu.Lock()
+	peer, ok := r.linked[key]
+	photoID := r.linkedPhotoID[key]
+	r.mu.Unlock()
+	if ok {
+		return peer, photoID, nil
 	}
 
 	input, err := channel.inputChannel()
@@ -392,9 +516,12 @@ func (r *peerResolver) linkedChatInfo(ctx context.Context, channel Peer) (Peer, 
 	for _, chat := range full.Chats {
 		peer, ok := peerFromChatClass(chat)
 		if ok && peer.ID == linkedID {
+			photoID = chatClassPhotoID(chat)
+			r.mu.Lock()
 			r.linked[key] = peer
-			r.linkedPhotoID[key] = chatClassPhotoID(chat)
-			return peer, r.linkedPhotoID[key], nil
+			r.linkedPhotoID[key] = photoID
+			r.mu.Unlock()
+			return peer, photoID, nil
 		}
 	}
 	return Peer{}, 0, fmt.Errorf("讨论组 %d 不在返回结果里，请确认已用该账号加入讨论组", linkedID)
@@ -414,7 +541,11 @@ func chatClassPhotoID(chat tg.ChatClass) int64 {
 // loadDialogs 分页拉取会话列表，用于解析 t.me/c/ 形式的私有频道链接。
 //
 // 私有频道不在链接里带 access hash，只能从账号自己的会话列表里找。
+// 整段持锁：并发解析多条 /c/ 链接时只能拉一遍列表，多等一会儿好过重复拉五页。
 func (r *peerResolver) loadDialogs(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
 	if r.dialogsLoaded {
 		return nil
 	}
@@ -541,6 +672,25 @@ func fetchMessages(ctx context.Context, api *tg.Client, peer Peer, ids []int) (m
 	return out, users, chatPhotoID, nil
 }
 
+// MessageGoneError 表示消息不存在或当前账号不可见。
+//
+// 单独成类型是为了让上层能区分「已删除」与「网络/鉴权失败」：
+// 前者可以把缓存里的旧快照降级展示，后者不行。
+type MessageGoneError struct {
+	MessageID int
+}
+
+// Error 保持与旧文案一致：调用方与测试都按这个字符串展示。
+func (e *MessageGoneError) Error() string {
+	return fmt.Sprintf("消息 %d 不存在或已被删除", e.MessageID)
+}
+
+// IsMessageGone 判断错误是否表示消息已被删除或当前账号不可见。
+func IsMessageGone(err error) bool {
+	var gone *MessageGoneError
+	return errors.As(err, &gone)
+}
+
 // fetchMessage 按「消息 ID + 1」读一条历史，取回的必须是目标消息本身，
 // 否则说明消息已删除；这种取法对频道、普通群和私聊都适用。
 //
@@ -566,11 +716,11 @@ func fetchMessage(ctx context.Context, api *tg.Client, peer Peer, messageID int)
 			continue
 		}
 		if msg.ID != messageID {
-			return nil, nil, 0, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
+			return nil, nil, 0, &MessageGoneError{MessageID: messageID}
 		}
 		return msg, usersOf(res), chatPhotoOf(res, peer.ID), nil
 	}
-	return nil, nil, 0, fmt.Errorf("消息 %d 不存在或已被删除", messageID)
+	return nil, nil, 0, &MessageGoneError{MessageID: messageID}
 }
 
 // fetchAlbum 读取消息所在相册的全部消息。

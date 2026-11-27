@@ -1866,6 +1866,38 @@
         }
       }
     },
+    "/api/v1/cache": {
+      "get": {
+        "tags": ["settings"],
+        "summary": "读取本地缓存规模",
+        "description": "返回消息快照、会话定位与评论线程缓存的行数，供设置页展示。",
+        "operationId": "getCacheStats",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "缓存规模",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CacheStats"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "501": {"description": "服务端没有接入缓存管理", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      },
+      "delete": {
+        "tags": ["settings"],
+        "summary": "清空本地缓存",
+        "description": "删除消息快照、会话定位与评论线程缓存，返回被删除的行数。只删数据库行，磁盘缩略图缓存保留；清空后第一次预览会重新联网。",
+        "operationId": "clearCache",
+        "security": [{"bearerAuth": []}],
+        "responses": {
+          "200": {
+            "description": "已删除的行数",
+            "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CacheStats"}}}
+          },
+          "401": {"$ref": "#/components/responses/Unauthorized"},
+          "501": {"description": "服务端没有接入缓存管理", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}
+        }
+      }
+    },
     "/api/v1/settings": {
       "get": {
         "tags": [
@@ -2593,6 +2625,15 @@
             "format": "int64",
             "description": "查询时间，Unix 秒。"
           }
+        }
+      },
+      "CacheStats": {
+        "type": "object",
+        "description": "本地缓存规模，单位是行数。",
+        "properties": {
+          "messages": {"type": "integer", "format": "int64", "description": "消息快照（message_cache）行数"},
+          "peers": {"type": "integer", "format": "int64", "description": "会话定位（peer_cache）行数"},
+          "threads": {"type": "integer", "format": "int64", "description": "评论线程定位（thread_cache）行数"}
         }
       },
       "SettingsResponse": {

@@ -331,9 +331,10 @@ func TestSeedDefaults(t *testing.T) {
 	// 默认值非空的项：api_custom_enabled（false）、download_auto_preview（true）、
 	// download_comments（false）、download_expand_text_links（false）、
 	// download_overwrite（false）、download_threads（4）、download_workers（1）、
-	// http_proxy_enabled（true）、web_theme（system）、web_title_speed（false）。
-	if len(entries) != 10 {
-		t.Fatalf("默认配置应有 10 项，实际 %+v", entries)
+	// http_proxy_enabled（true）、message_cache_enabled（true）、
+	// web_theme（system）、web_title_speed（false）。
+	if len(entries) != 11 {
+		t.Fatalf("默认配置应有 11 项，实际 %+v", entries)
 	}
 	byKey := make(map[string]Entry, len(entries))
 	for _, entry := range entries {
@@ -374,8 +375,8 @@ func TestSeedDefaults(t *testing.T) {
 	if err := SeedDefaults(store.db); err != nil {
 		t.Fatalf("再次 SeedDefaults 失败: %v", err)
 	}
-	if entries, _ := store.List(); len(entries) != 10 {
-		t.Errorf("重复调用后应有 10 项，实际 %+v", entries)
+	if entries, _ := store.List(); len(entries) != 11 {
+		t.Errorf("重复调用后应有 11 项，实际 %+v", entries)
 	}
 
 	// 已有任意配置时不补默认值。

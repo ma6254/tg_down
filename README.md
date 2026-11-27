@@ -350,7 +350,7 @@ $ tg_down account list
 
 ```
 <exe 目录>/
-  data.db      # SQLite：accounts（账号）/ settings（配置）/ download_tasks（下载任务）
+  data.db      # SQLite：accounts（账号）/ settings（配置）/ download_tasks（下载任务）/ message_cache（消息快照）/ peer_cache（会话定位）/ thread_cache（评论线程）
   sessions/    # MTProto 登录凭据
   avatar/      # 账号与 peer 头像缓存（首次访问时创建）
   thumbnail/   # 媒体缩略图缓存（首次访问时创建）
@@ -363,6 +363,14 @@ $ tg_down account list
 - `accounts` 表字段：`id / kind / source / name / phone / username / session_path / state / last_error / tg_user_id / created_at / updated_at`。
 - `settings` 表字段：`key / type / value / updated_at`。
 - `download_tasks` 表以 `link` 唯一（同一条链接复用已有任务），记录任务状态、进度、文件路径与封面缓存键；字段定义见 `internal/database/download.go`。
+- `message_cache` 表以 `(chat_id, message_id)` 唯一，缓存链接预览用到的消息快照（正文、实体、媒体元数据），
+  正常有效期 24 小时，超过 90 天未使用会在启动时清理；它只服务展示，下载前仍会重新读取消息。
+- `peer_cache` 表以 `(account_id, lookup_key)` 唯一，缓存「链接 → 会话」的定位结果（用户名、私有频道 ID），
+  有效期 24 小时；与消息缓存同时命中时预览不再连接 Telegram。`access_hash` 按账号隔离，换账号会重新解析。
+- `thread_cache` 表以 `(account_id, lookup_key)` 唯一，缓存「帖子 → 讨论组线程」的定位，有效期 30 天；
+  命中后打开评论区只读一页评论。评论内容本身不缓存。
+- MTProto 连接在进程内复用（`internal/tgclient/mtproto/pool.go`），预览与评论区共用一条已授权的连接，
+  不再每次请求重新握手；session 文件被重写（重新登录）时旧连接会自动关闭重建。
 - session 文件本身存放在 `<数据目录>/sessions`（默认 `<exe 目录>/sessions/`，位置固定，只随 `TG_DOWN_HOME` 变化），
   数据库只记录**相对数据目录**的路径（如 `sessions/mtproto-xxx.json`），整个数据目录搬走后仍然有效；
   token、session 内容不写入数据库。
@@ -397,6 +405,7 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 | `download_expand_text_links` | 布尔值，默认 `false`；解析时展开正文里的文字链接。下载页的「展开正文里的链接」开关与设置页共用这一项 |
 | `download_auto_preview` | 布尔值，默认 `true`；打开下载页且草稿非空时自动解析一次；关闭后需手动点「解析预览」 |
 | `download_comments` | 布尔值，默认 `false`；下载页创建任务时同时下载频道帖子评论区的媒体文件（单帖最多 100 个评论媒体） |
+| `message_cache_enabled` | 布尔值，默认 `true`；链接预览是否复用本地消息缓存（24 小时有效）；关闭后每次都联网读取 |
 | `download_workers` | 整数，默认 `1`，范围 1-8；同时下载的文件数（对应 `--max-concurrency`，运行中修改对新任务生效） |
 | `download_threads` | 整数，默认 `4`，范围 1-8；单个文件的分块下载线程数 |
 | `current_account_id` | 当前选中的账号 ID，由 `account switch` 维护（手工设置需填已存在的账号 ID） |
@@ -417,7 +426,8 @@ tg_down config import backup.json -f json   # 扩展名不对时手动指定
 服务启动时如果 `settings` 表为空，会写入带非空默认值的配置项
 （`http_proxy_enabled=true`、`api_custom_enabled=false`、`download_overwrite=false`、
 `download_expand_text_links=false`、`download_auto_preview=true`、`download_comments=false`、
-`download_workers=1`、`download_threads=4`、`web_theme=system`、`web_title_speed=false`）；
+`download_workers=1`、`download_threads=4`、`message_cache_enabled=true`、
+`web_theme=system`、`web_title_speed=false`）；
 `http_proxy`、`api_id` 等空默认值表示未配置，不会写入空行。
 
 - `web_theme`：网页主题，`light` / `dark` / `system`，默认 `system`；Web 设置页读写。

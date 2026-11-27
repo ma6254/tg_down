@@ -89,6 +89,13 @@ type Config struct {
 	// 业务层用 config.ErrInvalidSetting 表示未知键或取值非法；为 nil 时接口返回 501。
 	UpdateSettings func(ctx context.Context, patch map[string]*string) ([]config.Entry, error)
 
+	// GetCacheStats 返回本地缓存的规模（消息快照、会话定位、评论线程的行数）；
+	// 为 nil 时接口返回 501。
+	GetCacheStats func(ctx context.Context) (CacheStats, error)
+
+	// ClearCache 清空本地缓存并返回删除的行数；为 nil 时接口返回 501。
+	ClearCache func(ctx context.Context) (CacheStats, error)
+
 	// CreateDownloads 解析链接、创建下载任务并入队；为 nil 时接口返回 501。
 	CreateDownloads func(ctx context.Context, req DownloadCreateRequest) (DownloadCreateResponse, error)
 

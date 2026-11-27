@@ -23,6 +23,12 @@ func NewPreviewItems(results []mtproto.LinkResult, expanded bool, session mtprot
 		item := PreviewItem{
 			Link:     result.Target.Raw,
 			Expanded: expanded,
+			Cached:   result.Cached,
+			Stale:    result.Stale,
+			Gone:     result.Gone,
+		}
+		if !result.CachedAt.IsZero() {
+			item.CachedAt = result.CachedAt.Unix()
 		}
 		if result.Err != nil {
 			item.Error = result.Err.Error()

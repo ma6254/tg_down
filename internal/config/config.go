@@ -46,6 +46,8 @@ const (
 	KeyDownloadWorkers = "download_workers"
 	// KeyDownloadThreads 是单个文件的分块下载线程数（1-8）。
 	KeyDownloadThreads = "download_threads"
+	// KeyMessageCacheEnabled 控制链接预览是否使用消息内容缓存。
+	KeyMessageCacheEnabled = "message_cache_enabled"
 	// KeyWebTheme 是网页主题：light（浅色）/ dark（深色）/ system（跟随系统）。
 	KeyWebTheme = "web_theme"
 	// KeyWebTitleSpeed 控制是否在浏览器标签标题中显示当前总下载速度。
@@ -158,6 +160,13 @@ var items = []Item{
 		Default:     "4",
 		Description: "单个文件的分块下载线程数（1-8）；调大可能更容易触发 Telegram 限流",
 		Validate:    ValidateDownloadCount,
+	},
+	{
+		Key:         KeyMessageCacheEnabled,
+		Type:        TypeBoolean,
+		Default:     "true",
+		Description: "链接预览是否复用本地缓存的消息内容；关闭后每次都联网读取，消息被编辑后可立即看到新内容",
+		Validate:    ValidateBool,
 	},
 	{
 		Key:         KeyWebTheme,

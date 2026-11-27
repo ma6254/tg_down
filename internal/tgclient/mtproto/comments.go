@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/gotd/td/telegram"
 	"github.com/gotd/td/tg"
 
 	"github.com/ma6254/tg_down/internal/link"
@@ -81,12 +82,27 @@ type CommentsResult struct {
 	NextOffsetID int
 }
 
+// CommentThread 是帖子在讨论组里的定位结果。
+//
+// 它包含「帖子 → 关联讨论组 → 线程起点」的完整映射，缓存后可以跳过
+// 读帖子、查讨论组、定位线程三个 RPC。
+type CommentThread struct {
+	Post          Peer
+	Chat          Peer
+	ThreadID      int
+	PostPhotoID   int64
+	LinkedPhotoID int64
+}
+
 // ResolveComments 读取频道帖子的评论区。
 //
 // 只支持广播频道：先读帖子上的 replies 信息，再通过频道的关联讨论组
 // 找到讨论消息（相册帖会有多条副本，取 ID 最小的那条作为线程起点），
 // 最后调用 messages.getReplies 分页读取评论。
-func (s Session) ResolveComments(ctx context.Context, target link.Target, opts CommentsOptions) (*CommentsResult, error) {
+//
+// hint 是调用方缓存下来的线程定位结果；非空时跳过前三步，直接读评论页。
+func (s Session) ResolveComments(ctx context.Context, target link.Target, opts CommentsOptions,
+	hint *CommentThread) (*CommentsResult, error) {
 	if target.MessageID <= 0 {
 		return nil, errors.New("链接里没有消息 ID")
 	}
@@ -103,99 +119,95 @@ func (s Session) ResolveComments(ctx context.Context, target link.Target, opts C
 		offsetID = 0
 	}
 
-	login := s.options()
-	if login.APIID <= 0 {
-		return nil, errors.New("缺少 api 凭据")
-	}
-	if login.APIHash == "" {
-		return nil, errors.New("缺少 api 凭据")
-	}
-	if login.SessionPath == "" {
-		return nil, errors.New("缺少 session 路径")
-	}
-
-	client, err := newClient(login)
-	if err != nil {
-		return nil, err
-	}
-
 	result := CommentsResult{
 		Target:   target,
 		PostID:   target.MessageID,
 		Comments: []Comment{},
 	}
 
-	err = client.Run(ctx, func(ctx context.Context) error {
-		status, err := client.Auth().Status(ctx)
-		if err != nil {
-			return friendlyError(fmt.Errorf("查询登录状态: %w", err))
-		}
-		if !status.Authorized {
-			return errors.New("session 已失效，请重新执行 account login")
-		}
-
-		self, err := client.Self(ctx)
-		if err != nil {
-			return fmt.Errorf("读取账号信息: %w", err)
-		}
-		maxSize := MaxFileSize
-		if self.Premium {
-			maxSize = MaxFileSizePremium
-		}
-
-		api := client.API()
-		resolver := newPeerResolver(api)
-		peer, err := resolver.resolve(ctx, target)
-		if err != nil {
-			return err
-		}
+	// 线程定位：hint 非空时直接用缓存的会话与线程，省掉读帖子、查讨论组、
+	// 定位线程三个 RPC；否则走完整的定位流程。
+	var (
+		peer     Peer
+		linked   Peer
+		threadID int
+		// postReplies 是帖子上的评论总数；命中线程缓存时没有这个值，退回
+		// getReplies 响应里的计数。
+		postReplies int
+	)
+	if hint != nil && hint.ThreadID > 0 {
+		peer, linked, threadID = hint.Post, hint.Chat, hint.ThreadID
 		result.PostChat = &peer
-		if !peer.Broadcast {
-			result.Reason = "只有频道帖子支持评论区"
-			return nil
-		}
-
-		messages, _, postPhotoID, err := fetchMessages(ctx, api, peer, []int{target.MessageID})
-		if err != nil {
-			return err
-		}
-		if postPhotoID != 0 {
-			result.PostChatAvatar = &PeerPhoto{Peer: peer, PhotoID: postPhotoID}
-		}
-		post, ok := messages[target.MessageID]
-		if !ok {
-			return fmt.Errorf("消息 %d 不存在或已被删除", target.MessageID)
-		}
-		replies, ok := post.GetReplies()
-		if !ok || !replies.Comments {
-			result.Reason = "该帖子没有开启评论"
-			return nil
-		}
-
-		linked, linkedPhotoID, err := resolver.linkedChatInfo(ctx, peer)
-		if err != nil {
-			return err
-		}
 		result.Chat = &linked
-		if linkedPhotoID != 0 {
-			result.ChatAvatar = &PeerPhoto{Peer: linked, PhotoID: linkedPhotoID}
+		if hint.PostPhotoID != 0 {
+			result.PostChatAvatar = &PeerPhoto{Peer: peer, PhotoID: hint.PostPhotoID}
 		}
+		if hint.LinkedPhotoID != 0 {
+			result.ChatAvatar = &PeerPhoto{Peer: linked, PhotoID: hint.LinkedPhotoID}
+		}
+	}
 
-		postPeer, err := peer.inputPeer()
-		if err != nil {
-			return err
-		}
-		discussion, err := api.MessagesGetDiscussionMessage(ctx, &tg.MessagesGetDiscussionMessageRequest{
-			Peer:  postPeer,
-			MsgID: target.MessageID,
-		})
-		if err != nil {
-			return fmt.Errorf("查询评论线程: %w", friendlyError(err))
-		}
-		threadID := threadIDFromMessages(discussion.Messages)
+	err := s.runWithClient(ctx, func(ctx context.Context, client *telegram.Client, self *tg.User) error {
+		maxSize := accountMaxSize(self)
+		api := client.API()
+
 		if threadID == 0 {
-			result.Reason = "讨论组里没有找到这个帖子"
-			return nil
+			resolver := newPeerResolver(api)
+			var err error
+			peer, err = resolver.resolve(ctx, target)
+			if err != nil {
+				return err
+			}
+			result.PostChat = &peer
+			if !peer.Broadcast {
+				result.Reason = "只有频道帖子支持评论区"
+				return nil
+			}
+
+			messages, _, postPhotoID, err := fetchMessages(ctx, api, peer, []int{target.MessageID})
+			if err != nil {
+				return err
+			}
+			if postPhotoID != 0 {
+				result.PostChatAvatar = &PeerPhoto{Peer: peer, PhotoID: postPhotoID}
+			}
+			post, ok := messages[target.MessageID]
+			if !ok {
+				return &MessageGoneError{MessageID: target.MessageID}
+			}
+			replies, ok := post.GetReplies()
+			if !ok || !replies.Comments {
+				result.Reason = "该帖子没有开启评论"
+				return nil
+			}
+			postReplies = replies.Replies
+
+			var linkedPhotoID int64
+			linked, linkedPhotoID, err = resolver.linkedChatInfo(ctx, peer)
+			if err != nil {
+				return err
+			}
+			result.Chat = &linked
+			if linkedPhotoID != 0 {
+				result.ChatAvatar = &PeerPhoto{Peer: linked, PhotoID: linkedPhotoID}
+			}
+
+			postPeer, err := peer.inputPeer()
+			if err != nil {
+				return err
+			}
+			discussion, err := api.MessagesGetDiscussionMessage(ctx, &tg.MessagesGetDiscussionMessageRequest{
+				Peer:  postPeer,
+				MsgID: target.MessageID,
+			})
+			if err != nil {
+				return fmt.Errorf("查询评论线程: %w", friendlyError(err))
+			}
+			threadID = threadIDFromMessages(discussion.Messages)
+			if threadID == 0 {
+				result.Reason = "讨论组里没有找到这个帖子"
+				return nil
+			}
 		}
 		result.ThreadID = threadID
 
@@ -239,12 +251,12 @@ func (s Session) ResolveComments(ctx context.Context, target link.Target, opts C
 					continue
 				}
 				result.Comments = append(result.Comments,
-					commentFromMessage(msg, commentUsers, commentChannels, linked, maxSize))
+					commentFromMessage(msg, threadID, commentUsers, commentChannels, linked, maxSize))
 			}
 
 			result.Available = true
 			if result.Total <= 0 {
-				result.Total = replies.Replies
+				result.Total = postReplies
 				if result.Total <= 0 {
 					result.Total = commentCountOf(replyRes)
 				}
@@ -265,8 +277,12 @@ func (s Session) ResolveComments(ctx context.Context, target link.Target, opts C
 }
 
 // commentFromMessage 把一条讨论组消息映射成评论；媒体解析失败时保留原因。
+//
+// threadID 用来过滤「伪回复」：讨论组里每条消息的 reply_to 都指向线程起点
+// （帖子在讨论组的副本），那不是回复某条评论，界面上不该显示。
 func commentFromMessage(
 	msg *tg.Message,
+	threadID int,
 	users map[int64]*tg.User,
 	channels map[int64]*tg.Channel,
 	linked Peer,
@@ -280,7 +296,7 @@ func commentFromMessage(
 		Text:     text,
 		Links:    messageLinks(msg),
 		Entities: entities,
-		ReplyTo:  commentReplyOf(msg),
+		ReplyTo:  commentReplyOf(msg, threadID),
 	}
 
 	media, err := mediaFromMessage(msg)
@@ -320,7 +336,11 @@ func commentSenderOf(msg *tg.Message, users map[int64]*tg.User, channels map[int
 }
 
 // commentReplyOf 取出评论的回复目标与引用文字。
-func commentReplyOf(msg *tg.Message) *CommentReply {
+//
+// 讨论组里每条消息都带 reply_to，通常指向线程起点（帖子在讨论组的副本），
+// 这属于「评论挂在帖子下面」而不是「回复某条评论」；只有指向其它评论时
+// 才返回，避免每条评论下面都挂一行「回复 #线程ID」。
+func commentReplyOf(msg *tg.Message, threadID int) *CommentReply {
 	header, ok := msg.GetReplyTo()
 	if !ok {
 		return nil
@@ -331,6 +351,9 @@ func commentReplyOf(msg *tg.Message) *CommentReply {
 	}
 	messageID, ok := reply.GetReplyToMsgID()
 	if !ok || messageID == 0 {
+		return nil
+	}
+	if messageID == threadID {
 		return nil
 	}
 	quote, _ := reply.GetQuoteText()

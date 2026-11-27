@@ -32,6 +32,10 @@ type PreviewRequest struct {
 	Links []string `json:"links"`
 	// ExpandTextLinks 为 true 时，展开消息正文里的文字链接（只展开一层）。
 	ExpandTextLinks bool `json:"expand_text_links,omitempty"`
+	// Refresh 为 true 时绕过本地缓存重新读取消息（新结果仍会写回缓存）。
+	//
+	// 用户点「重新解析」时应当带上它，否则 24 小时内的编辑看不到。
+	Refresh bool `json:"refresh,omitempty"`
 }
 
 // PreviewChat 是消息所在会话的摘要。
@@ -127,6 +131,16 @@ type PreviewItem struct {
 	// CommentSection 是频道帖子的评论区摘要；普通消息/评论链接省略。
 	CommentSection *PreviewCommentSection `json:"comment_section,omitempty"`
 	Error          string                 `json:"error,omitempty"`
+	// Cached 表示这条结果来自本地缓存，数据可能不是最新的。
+	Cached bool `json:"cached,omitempty"`
+	// CachedAt 是缓存快照的获取时间（Unix 秒）；Cached 为 false 时省略。
+	//
+	// 对 gone 的消息它是最初取到正文的时间，不是「确认删除」的时间。
+	CachedAt int64 `json:"cached_at,omitempty"`
+	// Stale 表示缓存已过期且重取失败，返回的是旧快照。
+	Stale bool `json:"stale,omitempty"`
+	// Gone 表示消息已删除或当前账号不可见；Text 与 Media 是上次的快照。
+	Gone bool `json:"gone,omitempty"`
 }
 
 // PreviewSummary 汇总一次解析的结果。
@@ -147,7 +161,8 @@ type PreviewResponse struct {
 }
 
 // handlePreviewLinks 处理 POST /api/v1/links/preview：
-// 解析 Telegram 消息链接，返回正文、内嵌链接与媒体元数据，不写数据库。
+// 解析 Telegram 消息链接，返回正文、内嵌链接与媒体元数据；不创建下载任务，
+// 消息快照会按 (会话, 消息 ID) 写进本地缓存（见 internal/msgcache）。
 func (s *Server) handlePreviewLinks(w http.ResponseWriter, r *http.Request) {
 	if s.cfg.PreviewLinks == nil {
 		writeError(w, http.StatusNotImplemented, "not_implemented", "解析链接功能未接入")

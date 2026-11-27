@@ -20,6 +20,7 @@ import (
 
 	"github.com/ma6254/tg_down/internal/build"
 	"github.com/ma6254/tg_down/internal/server"
+	"github.com/ma6254/tg_down/internal/tgclient/mtproto"
 	"github.com/ma6254/tg_down/internal/utils"
 	"github.com/ma6254/tg_down/webembed"
 )
@@ -100,6 +101,10 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 	if err := ensureDownloadSettings(opts.MaxConcurrency); err != nil {
 		fmt.Fprintf(os.Stderr, "初始化下载设置失败（继续启动）: %v\n", err)
 	}
+	// 清理长期未用的消息缓存；失败不阻止启动。
+	if err := pruneMessageCache(); err != nil {
+		fmt.Fprintf(os.Stderr, "清理消息缓存失败（继续启动）: %v\n", err)
+	}
 
 	// SSE 广播器：下载管理器往这里发事件，/api/v1/events 从这里订阅。
 	hub := server.NewEventHub()
@@ -147,6 +152,8 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 		// 系统配置：config list / set / unset 的 HTTP 版。
 		GetSettings:    getSettings,
 		UpdateSettings: updateSettings,
+		GetCacheStats:  cacheStats,
+		ClearCache:     clearCache,
 		// 下载任务：创建后由后台 worker 执行，进度通过 SSE 推送。
 		CreateDownloads:         createDownloads(mgr),
 		ListDownloads:           listDownloads(mgr),
@@ -176,7 +183,7 @@ func (c *command) run(cmd *cobra.Command, _ []string) error {
 
 	addr := ln.Addr().String()
 	printStartupInfo(addr, opts, webFS != nil)
-	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.Stop)
+	return serveUntilSignal(cmd.Context(), srv, ln, addr, mgr.Stop, closeTelegram)
 }
 
 // embeddedWebFS 返回内嵌进二进制的前端产物；未用 webdist 标签构建时为 nil。
@@ -221,6 +228,11 @@ func serveUntilSignal(ctx context.Context, srv *server.Server, ln net.Listener, 
 	}
 	fmt.Println("已退出")
 	return nil
+}
+
+// closeTelegram 关闭常驻的 MTProto 连接，避免进程退出时留下后台连接。
+func closeTelegram(context.Context) {
+	mtproto.CloseConnections()
 }
 
 // signalName 把信号映射成可读名字，便于确认是哪种方式结束了进程。

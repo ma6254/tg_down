@@ -38,7 +38,7 @@ func TestCommentFromMessage(t *testing.T) {
 		42: {ID: 42, FirstName: "Alice", Username: "alice"},
 	}
 	linked := Peer{Kind: PeerKindChannel, ID: 200, Username: "comments"}
-	comment := commentFromMessage(msg, users, nil, linked, 100)
+	comment := commentFromMessage(msg, 10367, users, nil, linked, 100)
 
 	if comment.ID != 9 || comment.Text != "hello" {
 		t.Fatalf("comment = %+v", comment)
@@ -77,7 +77,7 @@ func TestCommentFromMessageMediaError(t *testing.T) {
 		Date: 1700000000,
 	}
 	msg.SetMedia(&tg.MessageMediaWebPage{})
-	comment := commentFromMessage(msg, nil, nil, Peer{}, 100)
+	comment := commentFromMessage(msg, 0, nil, nil, Peer{}, 100)
 	if comment.Media != nil {
 		t.Errorf("media = %+v，期望 nil", comment.Media)
 	}
@@ -140,5 +140,38 @@ func TestNextCommentsOffset(t *testing.T) {
 				t.Errorf("nextCommentsOffset = %d，期望 %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestCommentReplyIgnoresThreadRoot 确认「挂在帖子下面」不算回复。
+//
+// 讨论组里每条消息的 reply_to 都指向线程起点，以前会被渲染成
+// 「回复 #线程ID」，于是每条评论下面都挂一行，看起来像坏数据。
+func TestCommentReplyIgnoresThreadRoot(t *testing.T) {
+	header := &tg.MessageReplyHeader{}
+	header.SetReplyToMsgID(10367)
+	msg := &tg.Message{ID: 10, Message: "hello"}
+	msg.SetReplyTo(header)
+
+	comment := commentFromMessage(msg, 10367, nil, nil, Peer{}, 100)
+	if comment.ReplyTo != nil {
+		t.Fatalf("线程起点不应算回复，实际 %+v", comment.ReplyTo)
+	}
+}
+
+// TestCommentReplyToSibling 确认真的回复其它评论时仍然保留。
+func TestCommentReplyToSibling(t *testing.T) {
+	header := &tg.MessageReplyHeader{}
+	header.SetReplyToMsgID(10370)
+	header.SetQuoteText("原评论")
+	msg := &tg.Message{ID: 11, Message: "回复"}
+	msg.SetReplyTo(header)
+
+	comment := commentFromMessage(msg, 10367, nil, nil, Peer{}, 100)
+	if comment.ReplyTo == nil || comment.ReplyTo.MessageID != 10370 {
+		t.Fatalf("replyTo = %+v，期望 10370", comment.ReplyTo)
+	}
+	if comment.ReplyTo.Quote != "原评论" {
+		t.Errorf("quote = %q", comment.ReplyTo.Quote)
 	}
 }

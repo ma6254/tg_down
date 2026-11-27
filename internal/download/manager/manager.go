@@ -460,7 +460,7 @@ func resolveDownloadComments(
 		Limit:    50,
 		All:      true,
 		MaxPages: maxCommentPages,
-	})
+	}, nil)
 }
 
 // enqueueMedia 把一条媒体落库并入队，结果写入 resp。

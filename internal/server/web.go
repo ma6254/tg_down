@@ -3,6 +3,7 @@ package server
 import (
 	"io"
 	"io/fs"
+	"mime"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -10,6 +11,22 @@ import (
 	"path"
 	"strings"
 )
+
+// 字体扩展名不在 Go 内建的 MIME 表里，必须显式登记。
+//
+// http.ServeContent 遇到未知扩展名会嗅探前 512 字节再 Seek 回起点，
+// 而压缩包内嵌的文件不支持 Seek，结果是 500 "seeker can't seek"。
+func init() {
+	knownTypes := map[string]string{
+		".woff2": "font/woff2",
+		".woff":  "font/woff",
+		".ttf":   "font/ttf",
+		".otf":   "font/otf",
+	}
+	for ext, typ := range knownTypes {
+		_ = mime.AddExtensionType(ext, typ)
+	}
+}
 
 // mountWeb 根据 web.mode 决定前端如何接入。
 //

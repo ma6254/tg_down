@@ -88,6 +88,10 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/v1/settings", s.handleSettingsGet)
 	mux.HandleFunc("PUT /api/v1/settings", s.handleSettingsUpdate)
 
+	// 本地缓存：查看规模与一键清空（消息快照、会话定位、评论线程）。
+	mux.HandleFunc("GET /api/v1/cache", s.handleCacheStats)
+	mux.HandleFunc("DELETE /api/v1/cache", s.handleCacheClear)
+
 	// 尚未实现的接口明确返回 JSON 404，而不是回落到前端页面，
 	// 免得前端把 HTML 当成接口响应。兜底模式不带方法，
 	// 因此方法不匹配的请求也会落到这里（404 而非 405）。
